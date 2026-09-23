@@ -19,6 +19,10 @@
 | **Fase 6** | `tests/test_sql_guard.py`, `tests/test_config.py`, `tests/test_introspection.py`. Los 33 casos corren sin red ni credenciales (`pytest`) |
 | **Fase 7** | `README.md` reescrito con instalación, `.env` mínimo y decisiones de diseño actualizadas. `documentacion general del proyecto.md` se reemplazó por un puntero a esta documentación (el archivo original tenía afirmaciones que ya no coincidían con el código). `requirements.txt` y `.env.example` actualizados |
 
+## Extra (no estaba en el plan original)
+
+- `start_app.bat` y `seed_demo.bat`: automatizan en Windows la creacion del entorno virtual, la instalacion de dependencias, la creacion de `.env` desde `.env.example` y el arranque de la app / el sembrado de la base de demo. El README los documenta como "Opcion rapida".
+
 ## Pendiente
 
 | # | Qué falta | Nota |

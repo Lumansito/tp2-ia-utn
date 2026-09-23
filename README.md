@@ -81,6 +81,8 @@ tp2-ia-utn/
 ├── material-catedra/             # Notebooks de la materia, no forman parte del proyecto
 ├── docs/                          # Documentación del estado del proyecto y plan de trabajo
 ├── render_dbml.js                # Renderiza el DBML a SVG (opcional, requiere Node.js)
+├── start_app.bat                 # Windows: instala dependencias, prepara .env y levanta la app
+├── seed_demo.bat                 # Windows: siembra la base de demo (wrapper de scripts/seed_demo.py)
 ├── requirements.txt
 └── .env.example
 ```
@@ -91,7 +93,30 @@ tp2-ia-utn/
 
 ## 🚀 Puesta en marcha
 
-### 1. Instalar dependencias
+### Opción rápida (Windows): `start_app.bat`
+
+Para no tener que instalar nada a mano, en Windows alcanza con hacer doble clic en
+[`start_app.bat`](start_app.bat) (o correrlo desde una consola). El script:
+
+1. Verifica que `python` esté instalado.
+2. Crea un entorno virtual en `.venv` (la primera vez) y lo activa.
+3. Instala/actualiza las dependencias de `requirements.txt`.
+4. Si no existe `.env`, lo crea a partir de `.env.example` y lo abre en el Bloc de notas para
+   que completes `DATABASE_URL` y `GOOGLE_API_KEY` (avisa y no continúa si te olvidaste de
+   cambiar la clave de ejemplo).
+5. Levanta la app con `streamlit run db_copilot/app.py` en `http://localhost:8501`.
+
+Para sembrar la base de demo (15 tablas con Faker) también en Windows, corré
+[`seed_demo.bat`](seed_demo.bat) (usa el mismo `.venv` que crea `start_app.bat`, así que corré
+ese primero al menos una vez). Te pasa cualquier argumento extra a `scripts/seed_demo.py`, por
+ejemplo `seed_demo.bat --orders 500`.
+
+Estos dos `.bat` no reemplazan nada de lo de abajo: solo automatizan los mismos pasos manuales.
+Si preferís hacerlo a mano, o estás en Linux/Mac, seguí con la opción manual.
+
+### Opción manual
+
+#### 1. Instalar dependencias
 
 Requiere Python 3.10+.
 
@@ -105,7 +130,7 @@ Opcional, solo para renderizar el diagrama ER a SVG:
 npm install @softwaretechnik/dbml-renderer
 ```
 
-### 2. Configurar el `.env`
+#### 2. Configurar el `.env`
 
 ```bash
 cp .env.example .env
@@ -122,7 +147,7 @@ Solo se usa **Google Gemini**: no hay soporte para OpenAI ni un vectorizador loc
 `GOOGLE_API_KEY`, la app **no arranca** (a propósito: preferimos un error claro antes que un modo
 degradado sin embeddings semánticos).
 
-### 3. (Opcional) Sembrar la base de demo
+#### 3. (Opcional) Sembrar la base de demo
 
 Si no tenés una base propia para probar, `scripts/seed_demo.py` crea el modelo de 15 tablas de
 e-commerce con datos generados con Faker. **No es un botón de la app**: recrear el esquema de una base
@@ -132,7 +157,7 @@ de datos es una acción irreversible y deliberadamente no está a un click de di
 python scripts/seed_demo.py --url "sqlite:///data/ecommerce.db" --orders 1500
 ```
 
-### 4. Ejecutar la app
+#### 4. Ejecutar la app
 
 ```bash
 streamlit run db_copilot/app.py
