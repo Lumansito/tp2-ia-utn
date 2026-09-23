@@ -1,144 +1,206 @@
-# 🛡️ DB Copilot — Copiloto RAG & Agente SQL para PostgreSQL
+# 🛡️ DB Copilot — Copiloto RAG & Agente SQL para bases de datos relacionales
 
-> **TP2: Sistemas Inteligentes** — Universidad Tecnológica Nacional (UTN)  
-> Sistema inteligente para consulta, documentación y gestión operativa de bases de datos relacionales mediante RAG y Agentes LangGraph / LangChain con Guardrails de seguridad y Human-In-The-Loop.
+> **TP2: Sistemas Inteligentes** — Universidad Tecnológica Nacional (UTN)
+> Sistema inteligente para consultar, documentar y operar sobre una base de datos relacional
+> mediante RAG y un agente de LangGraph con guardrails de seguridad y aprobación humana (Human-In-The-Loop).
 
----
-
-## 🎯 Caso de Negocio y Objetivos
-
-* **Problema:** En las organizaciones, comprender el modelo de datos de una base relacional y escribir consultas SQL correctas suele depender de ingenieros o DBAs que conocen la base "de memoria". Esto genera cuellos de botella constantes para analistas, equipos de negocio y desarrolladores.
-* **Solución:** Un copiloto inteligente que:
-  1. **Conoce la estructura (RAG sobre el Esquema):** Responde preguntas de arquitectura y relaciones sin necesidad de ejecutar consultas sobre los datos.
-  2. **Opera de forma segura (Agente con Guardrails):** Traduce peticiones en lenguaje natural a SQL, inyecta límites preventivos, ejecuta consultas de lectura de inmediato y **retiene operaciones de modificación (UPDATE/DELETE)** hasta que un humano las apruebe explícitamente.
-  3. **Separa el canal de datos del canal de texto:** Cuando se consultan grandes volúmenes (ej. 1000 filas), los datos se entregan directamente como DataFrame interactivo a la interfaz (Streamlit / Notebook) y no se pasan como texto al LLM, reduciendo costos, latencia y alucinaciones.
+> Documentación extendida en [`docs/`](docs/): estado del proyecto en
+> [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md) y el plan de trabajo en
+> [`docs/02-plan-de-desarrollo.md`](docs/02-plan-de-desarrollo.md).
 
 ---
 
-## 🏗️ Arquitectura del Sistema
+## 🎯 Caso de negocio
 
-```
-                         [ Pregunta del Usuario ]
-                                    │
-                  ┌─────────────────┴─────────────────┐
-                  ▼                                   ▼
-        [ Modo Esquema (RAG) ]             [ Modo Agente (SQL) ]
-                  │                                   │
-      ┌───────────┴───────────┐           ┌───────────┴───────────┐
-      ▼                       ▼           ▼                       ▼
-[ Retriever RAG ]    [ Síntesis LLM ]  [ RAG de Esquema ]   [ Generación SQL ]
-(Chroma Vector Store) (Explicación)    (Tablas y FKs)              │
-                                                                   ▼
-                                                          [ Guardrails sqlglot ]
-                                                          - Sentencia única
-                                                          - Inyección de LIMIT
-                                                          - Clasificación AST
-                                                                   │
-                                           ┌───────────────────────┴───────────────────────┐
-                                           ▼                                               ▼
-                                   [ SELECT Permitido ]                           [ UPDATE / DELETE ]
-                                           │                                               │
-                                 ┌─────────┴─────────┐                         [ Cola de Aprobación Humana ]
-                                 ▼                   ▼                                     │
-                        [ Canal de Datos ]   [ Canal de Texto ]                   ┌────────┴────────┐
-                         (DataFrame a UI)     (Resumen 1 línea)                   ▼                 ▼
-                                                                             [ APROBADO ]      [ RECHAZADO ]
-                                                                             (Ejecuta en DB)   (Cancela acción)
-```
+En las organizaciones, entender el modelo de datos de una base relacional y escribir SQL correcto
+suele depender de pocas personas (ingenieros o DBAs que conocen la base "de memoria"), lo que genera
+cuellos de botella para analistas y equipos de negocio.
+
+**DB Copilot** resuelve esto con dos modos:
+
+1. **Modo Documentación (RAG):** responde preguntas sobre la estructura de la base (tablas, columnas,
+   relaciones, índices) sin ejecutar SQL, usando búsqueda semántica sobre el esquema.
+2. **Modo Agente SQL:** un agente de LangGraph decide qué herramientas usar (buscar en el esquema,
+   describir una tabla, ejecutar una lectura, proponer una escritura) para responder pedidos en
+   lenguaje natural, con guardrails de seguridad y aprobación humana obligatoria para toda escritura.
 
 ---
 
-## 📁 Estructura del Proyecto
+## 🏗️ Arquitectura
 
 ```
-utn-ia-tp2/
+                    Usuario (lenguaje natural)
+                              │
+              ┌───────────────┴────────────────┐
+              ▼                                 ▼
+   Modo Documentación (RAG)              Modo Agente SQL (LangGraph)
+              │                                 │
+    Retriever semántico (Chroma)      Agente ReAct con herramientas:
+    sobre el esquema introspectado    list_tables, describe_table,
+    en vivo desde DATABASE_URL        retrieve_schema, run_select, run_write
+              │                                 │
+     Síntesis con Gemini                Guardrails (sqlglot AST)
+                                                 │
+                                   ┌─────────────┴─────────────┐
+                                   ▼                            ▼
+                         SELECT permitido              INSERT/UPDATE/DELETE
+                         (LIMIT inyectado)              → cola de aprobación
+                                   │                     humana (HITL)
+                          DataFrame a la UI                     │
+                                                        Aprobado → ejecuta
+                                                        Rechazado → cancela
+                                          (todo queda en el audit log)
+```
+
+El esquema **siempre** se lee en vivo de `DATABASE_URL` (introspección con SQLAlchemy). No hay carga
+manual de un `.sql`/`.json`: eso evitaba que el sistema respondiera sobre un esquema distinto del que
+realmente consultaba.
+
+---
+
+## 📁 Estructura del proyecto
+
+```
+tp2-ia-utn/
 ├── db_copilot/
-│   ├── __init__.py
-│   ├── config.py                 # Conexión SQLAlchemy, variables de entorno y fábrica LLM/Embeddings
-│   ├── seed_data.py              # Generador Faker de 1200+ pedidos y tablas sintéticas
-│   ├── schema_introspection.py   # Introspección SQLAlchemy inspect(), soporte DDL/JSON a NLP
-│   ├── rag.py                    # Vector Store (Chroma), chunking, retriever y Modo Documentación
-│   ├── sql_guard.py              # Guardrails con sqlglot: clasificación AST, LIMIT e inyecciones
-│   ├── agent.py                  # Tools (@tool), LangGraph con Human-in-the-loop y separación de datos
-│   └── app.py                    # Aplicación interactiva en Streamlit (Chat, DataFrames y Aprobaciones)
-├── notebooks/
-│   └── demo.ipynb                # Cuaderno Jupyter paso a paso (Entregable obligatorio con fundamentación)
+│   ├── config.py                 # .env, engine SQLAlchemy, LLM y embeddings de Gemini (sin fallback)
+│   ├── schema_introspection.py   # Introspección en vivo del catálogo, docs NLP para el RAG, DBML/DDL
+│   ├── rag.py                    # Vector store (Chroma) con embeddings de Gemini
+│   ├── sql_guard.py              # Guardrails con sqlglot (AST): clasificación, LIMIT, bloqueo de DDL
+│   ├── agent.py                  # Herramientas @tool, agente ReAct de LangGraph, HITL
+│   ├── audit_store.py            # Auditoría y cola de aprobaciones persistidas en SQLite
+│   └── app.py                    # App Streamlit (Chat, Esquema, Diagrama ER, Auditoría)
+├── scripts/
+│   ├── seed_demo.py              # Siembra la base de demo (15 tablas) — SOLO por consola, con confirmación
+│   ├── _seed_enterprise_impl.py  # Implementación del sembrado (Faker)
+│   └── test_stream_agent.py      # Script manual para ver los pasos del agente en vivo
 ├── sql/
-│   └── schema_seed.sql           # DDL relacional (PostgreSQL / SQLite)
-├── data/                         # Base SQLite local para demo inmediata y persistencia de Chroma
-├── requirements.txt              # Dependencias fijadas y verificadas
-└── README.md                     # Documentación general y guía de defensa
+│   └── complex_enterprise_schema.sql   # DDL de referencia de las 15 tablas de demo
+├── tests/                         # pytest: sql_guard, config, introspección (sin red ni API)
+├── notebooks/demo.ipynb          # Notebook de la cátedra (a rehacer para la entrega final)
+├── material-catedra/             # Notebooks de la materia, no forman parte del proyecto
+├── docs/                          # Documentación del estado del proyecto y plan de trabajo
+├── render_dbml.js                # Renderiza el DBML a SVG (opcional, requiere Node.js)
+├── requirements.txt
+└── .env.example
 ```
+
+`data/` (Chroma y el audit log en SQLite) se crea sola al importar `config.py` y está en `.gitignore`.
 
 ---
 
-## 🚀 Puesta en Marcha
+## 🚀 Puesta en marcha
 
-### 1. Instalación de Dependencias
+### 1. Instalar dependencias
 
-Se requiere Python 3.10 o superior (verificado con Python 3.13):
+Requiere Python 3.10+.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configuración de Variables de Entorno (Opcional)
+Opcional, solo para renderizar el diagrama ER a SVG:
 
-Puedes crear un archivo `.env` en la raíz del proyecto o configurar las claves directamente en la interfaz gráfica de Streamlit:
-
-```env
-# Proveedor de LLM (OPENAI o GEMINI)
-LLM_PROVIDER=OPENAI
-OPENAI_API_KEY=tu_clave_de_openai_aqui
-# O bien:
-# LLM_PROVIDER=GEMINI
-# GOOGLE_API_KEY=tu_clave_de_gemini_aqui
-
-# Connection String a PostgreSQL (o se usa SQLite por defecto)
-DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/ecommerce_db
+```bash
+npm install @softwaretechnik/dbml-renderer
 ```
 
-### 3. Ejecutar la Aplicación Interactiva (Streamlit)
+### 2. Configurar el `.env`
+
+```bash
+cp .env.example .env
+```
+
+Como mínimo hacen falta:
+
+```env
+DATABASE_URL=postgresql+psycopg2://usuario:password@localhost:5432/mi_base
+GOOGLE_API_KEY=tu-api-key-de-gemini
+```
+
+Solo se usa **Google Gemini**: no hay soporte para OpenAI ni un vectorizador local de respaldo. Si falta
+`GOOGLE_API_KEY`, la app **no arranca** (a propósito: preferimos un error claro antes que un modo
+degradado sin embeddings semánticos).
+
+### 3. (Opcional) Sembrar la base de demo
+
+Si no tenés una base propia para probar, `scripts/seed_demo.py` crea el modelo de 15 tablas de
+e-commerce con datos generados con Faker. **No es un botón de la app**: recrear el esquema de una base
+de datos es una acción irreversible y deliberadamente no está a un click de distancia.
+
+```bash
+python scripts/seed_demo.py --url "sqlite:///data/ecommerce.db" --orders 1500
+```
+
+### 4. Ejecutar la app
 
 ```bash
 streamlit run db_copilot/app.py
 ```
 
-La app se abrirá en tu navegador (`http://localhost:8501`) y permite:
-* Ingresar el **Connection String** de PostgreSQL o activar la base sintética local.
-* Elegir el método de carga del esquema: **Introspección automática en vivo** o carga de archivo `.sql` / `.json`.
-* Alternar con un clic entre **Modo Documentación (RAG)** y **Modo Agente SQL**.
-* Ver los **DataFrames embebidos** interactivos con botón de descarga a CSV.
-* Gestionar las **aprobaciones de escrituras** con botones Aprobar / Rechazar.
-* Consultar la pestaña de **Auditoría (Audit Log)**.
-
-### 4. Ejecutar el Notebook Entregable
-
-Para visualizar la ejecución paso a paso del flujo teórico y práctico:
-
-```bash
-jupyter notebook notebooks/demo.ipynb
-```
+Se abre en `http://localhost:8501`. Desde ahí podés:
+- alternar entre **Modo Agente** y **Modo Documentación (RAG)**;
+- ver el esquema de la base en vivo, su diagrama ER y una muestra de cada tabla (todo de solo lectura);
+- aprobar o rechazar las escrituras (`INSERT`/`UPDATE`/`DELETE`) que proponga el agente;
+- consultar el log de auditoría completo.
 
 ---
 
-## 🧠 Decisiones de Diseño Clave (Para la Defensa Oral)
+## 🧠 Decisiones de diseño clave
 
-### 1. Separación del Canal de Datos vs. Canal Conversacional
-* **Por qué:** Cuando se piden 1000 pedidos, si las 1000 filas se inyectan en el prompt del LLM para que las "reescriba", se consumen decenas de miles de tokens innecesarios, se ralentiza la aplicación y el LLM suele truncar o alucinar filas intermedias.
-* **Nuestra arquitectura:** La herramienta `run_select` devuelve el objeto `pandas.DataFrame` directo a la capa visual (`st.dataframe(df)` o `display(df)`), y al LLM solo se le remite una síntesis técnica (cantidad de filas, nombres de columnas y muestra estadística) para que elabore un resumen conversacional de 1-2 líneas.
+### 1. Agente real de LangGraph, no un pipeline fijo
+El modo Agente usa `create_react_agent` de LangGraph: el LLM decide en cada paso qué herramienta
+invocar (`list_tables`, `describe_table`, `retrieve_schema`, `run_select`, `run_write`). La
+auto-corrección ante un error de SQL no es un prompt especial aparte: `run_select` devuelve el error
+del motor como texto y el mismo agente lo lee, corrige el SQL y reintenta.
 
-### 2. Guardrails Multinivel con `sqlglot`
-* **Validación AST formal:** En lugar de relying en expresiones regulares frágiles, utilizamos `sqlglot` para parsear el árbol sintáctico del dialecto destino.
-* **Defensa en profundidad:**
-  1. *Sentencia única obligatoria:* Si la cadena contiene múltiples expresiones separadas por punto y coma (ej. `SELECT ...; DROP TABLE ...;`), se bloquea de inmediato.
-  2. *Inyección de `LIMIT 500`:* Si un `SELECT` carece de límite, se le agrega automáticamente en el AST.
-  3. *Rechazo tajante de DDL:* Operaciones `DROP`, `ALTER`, `CREATE` o `TRUNCATE` están deshabilitadas sin excepción.
+### 2. Separación del canal de datos y el canal conversacional
+`run_select` ejecuta la consulta y guarda el `DataFrame` completo para la interfaz; al LLM solo le
+llega un resumen (cantidad de filas, columnas y una muestra de 2 filas). Evita transcribir miles de
+filas en el prompt, con el costo, la latencia y el riesgo de alucinación que eso implica.
 
-### 3. Human-in-the-Loop para Mutaciones (`UPDATE` / `DELETE`)
-* En entornos productivos, un agente no debe mutar datos sin supervisión.
-* La herramienta `run_write` suspende la acción, le asigna un `action_id` y la encola como `PENDING`. Solo cuando un humano presiona "Aprobar", la sentencia se envía al motor, registrando quién, cuándo y cuántas filas se alteraron en el log de auditoría.
+### 3. Guardrails con `sqlglot` (AST), no con expresiones regulares
+`sql_guard.py` parsea el árbol de sintaxis de cada sentencia: exige que sea una única sentencia,
+inyecta `LIMIT` en las lecturas que no lo tengan (incluye `UNION`/`INTERSECT`/`EXCEPT`/`WITH`), y
+bloquea sin excepción `DROP`/`ALTER`/`CREATE`/`TRUNCATE`. `INSERT`/`UPDATE`/`DELETE` no se bloquean:
+quedan retenidos para aprobación humana.
 
-### 4. Introspección y Anclaje RAG (*Anti-Alucinaciones*)
-* El agente tiene la instrucción mandatoria en su prompt de invocar `retrieve_schema` antes de estructurar cualquier consulta SQL.
-* Esto ancla las referencias de columnas y relaciones foráneas al catálogo real, evitando errores sintácticos o uniones contra tablas inexistentes.
+### 4. Human-in-the-Loop persistente
+Toda escritura propuesta por el agente queda en una cola de aprobación (`data/audit.sqlite`) con un ID
+único. Solo se ejecuta contra la base cuando un operador la aprueba explícitamente desde la interfaz.
+A diferencia de la primera versión, esto y el log de auditoría sobreviven a un reinicio de la app y no
+se comparten entre sesiones de distintos usuarios.
+
+### 5. Esquema siempre en vivo, sin sinónimos escritos a mano
+La introspección lee `COMMENT ON TABLE`/`COMMENT ON COLUMN` de la propia base como contexto de
+negocio para el RAG, en vez de un diccionario de sinónimos fijo pensado para un único modelo de datos.
+Esto permite apuntar `DATABASE_URL` a cualquier base y que el sistema siga funcionando.
+
+### 6. Solo Gemini, con degradación explícita ante fallas
+El LLM y los embeddings usan exclusivamente la API de Google Gemini. El respaldo ante un error 429/503
+usa `.with_fallbacks(...)` de LangChain (un modelo Flash-Lite más liviano), en vez de detectar códigos
+de error a mano. Si falta la API key, la aplicación no arranca: no hay fallback a un vectorizador local
+sin significado semántico.
+
+---
+
+## 🧪 Tests
+
+```bash
+pytest
+```
+
+Los tests de `sql_guard`, `config` e introspección no requieren red ni credenciales (usan SQLite en
+memoria y validan que las factories fallen con un error claro cuando falta configuración). No hay un
+test automático contra la API real de Gemini: eso se verifica a mano con `scripts/test_stream_agent.py`.
+
+---
+
+## ⚠️ Notas para la defensa
+
+- Los nombres de modelo de Gemini configurados en `.env.example` cambian con frecuencia; confirmarlos
+  en [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models) antes de una
+  demo importante.
+- El notebook de entrega (`notebooks/demo.ipynb`) todavía corresponde a la versión anterior del
+  proyecto y se va a rehacer al final, una vez cerrada la app (ver `docs/02-plan-de-desarrollo.md`,
+  fase 8).

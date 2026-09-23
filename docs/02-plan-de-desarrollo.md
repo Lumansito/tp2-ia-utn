@@ -1,5 +1,8 @@
 # DB Copilot: plan de desarrollo
 
+> **Actualizacion (23/09/2026):** las fases 0 a 7 de este plan ya estan programadas. El detalle de que se hizo y que quedo pendiente esta en [`00-estado-de-implementacion.md`](00-estado-de-implementacion.md). Este archivo se deja tal cual quedo redactado como plan original.
+
+
 > Parte del estado descrito en [`01-documentacion-actual.md`](01-documentacion-actual.md).
 > **Alcance:** dejar bien la **app**. El notebook de entrega y la presentación se hacen al final (fase 8), a partir de la app terminada.
 > **Fecha límite:** defensa el **30/09** o el **14/10** (tarde/noche), o el **01/10** o el **08/10** (mañana). Conviene tener la app cerrada unos días antes de la primera fecha.

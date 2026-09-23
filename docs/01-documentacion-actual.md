@@ -1,5 +1,8 @@
 # DB Copilot: documentación del estado actual
 
+> **Nota (23/09/2026):** este documento describe el estado del proyecto **antes** del refactor (commit `ec1f291`). Se deja como referencia historica de los problemas detectados y por que se tomo cada decision. El estado real del codigo hoy esta en [`00-estado-de-implementacion.md`](00-estado-de-implementacion.md) y en el [`README.md`](../README.md) de la raiz.
+
+
 > **Qué es este documento:** describe lo que el código hace **hoy** (commit `ec1f291`, 23/09/2026), no lo que dice el README. Cuando la documentación existente (`README.md`, `documentacion general del proyecto.md`) no coincide con el código, se aclara en la [sección 9](#9-diferencias-entre-la-documentación-existente-y-el-código).
 >
 > El plan de cambios está en [`02-plan-de-desarrollo.md`](02-plan-de-desarrollo.md).
