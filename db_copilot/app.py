@@ -213,19 +213,24 @@ with tab_chat:
 
     for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg.get("sql"):
-                st.code(msg["sql"], language="sql")
-            if msg.get("dataframe") is not None:
-                st.dataframe(msg["dataframe"], use_container_width=True)
-                st.download_button(
-                    "Descargar CSV", msg["dataframe"].to_csv(index=False),
-                    file_name="resultado.csv", key=f"csv_hist_{i}",
-                    icon=":material/download:",
-                )
-            if msg.get("timeline"):
-                with st.expander("Detalle de ejecución", icon=":material/schedule:"):
-                    _render_timeline(msg["timeline"])
+            if msg["role"] == "user":
+                st.markdown(msg["content"])
+            else:
+                if msg.get("timeline"):
+                    with st.expander("Detalle de ejecución", icon=":material/schedule:"):
+                        _render_timeline(msg["timeline"])
+                        if msg.get("total_duration"):
+                            st.caption(f"Duración total: {msg['total_duration']}s")
+                if msg.get("sql"):
+                    st.code(msg["sql"], language="sql")
+                st.markdown(msg["content"])
+                if msg.get("dataframe") is not None:
+                    st.dataframe(msg["dataframe"], use_container_width=True)
+                    st.download_button(
+                        "Descargar CSV", msg["dataframe"].to_csv(index=False),
+                        file_name="resultado.csv", key=f"csv_hist_{i}",
+                        icon=":material/download:",
+                    )
 
     if question := st.chat_input("Preguntá algo sobre la base de datos..."):
         st.session_state.messages.append({"role": "user", "content": question})
@@ -237,9 +242,23 @@ with tab_chat:
                 result = st.session_state.copilot.ask(
                     question, mode=mode, thread_id=st.session_state.thread_id
                 )
-            st.markdown(result["response"])
+
+            if result.get("timeline"):
+                with st.expander("Detalle de ejecución", icon=":material/schedule:"):
+                    _render_timeline(result["timeline"])
+                    st.caption(f"Duración total: {result['total_duration']}s")
+
             if result.get("sql"):
                 st.code(result["sql"], language="sql")
+
+            if result.get("pending_write"):
+                st.info(
+                    f"Escritura pendiente de aprobación (ID `{result['pending_write']['id']}`). "
+                    "Mirá el panel superior."
+                )
+
+            st.markdown(result["response"])
+
             df = result.get("dataframe")
             if df is not None:
                 st.dataframe(df, use_container_width=True)
@@ -248,14 +267,6 @@ with tab_chat:
                     file_name="resultado.csv", key=f"csv_new_{len(st.session_state.messages)}",
                     icon=":material/download:",
                 )
-            if result.get("pending_write"):
-                st.info(
-                    f"Escritura pendiente de aprobación (ID `{result['pending_write']['id']}`). "
-                    "Mirá el panel superior."
-                )
-            with st.expander("Detalle de ejecución", icon=":material/schedule:"):
-                _render_timeline(result["timeline"])
-                st.caption(f"Duración total: {result['total_duration']}s")
 
         st.session_state.messages.append({
             "role": "assistant",
@@ -263,6 +274,7 @@ with tab_chat:
             "sql": result.get("sql"),
             "dataframe": df,
             "timeline": result["timeline"],
+            "total_duration": result.get("total_duration"),
         })
 
 with tab_schema:
@@ -342,8 +354,7 @@ with tab_schema:
             st.code(generate_ddl_preview(meta), language="sql")
 
 with tab_er:
-    st.subheader("Diagrama Entidad-Relación (DBML)", icon=":material/account_tree:")
-    st.caption("Generado dinámicamente a partir del esquema en vivo y renderizado como SVG.")
+    st.subheader("Diagrama Entidad-Relación", icon=":material/account_tree:")
 
     meta = st.session_state.schema_meta or {}
     if not meta.get("tables"):
@@ -384,7 +395,6 @@ with tab_er:
 
         with st.expander("Ver código DBML", icon=":material/terminal:"):
             st.code(dbml_code, language="text")
-            st.markdown("Podés pegar este DBML en [dbdiagram.io](https://dbdiagram.io) para editarlo o compartirlo.")
 
 with tab_audit:
     st.subheader("Registro de auditoría", icon=":material/history:")
