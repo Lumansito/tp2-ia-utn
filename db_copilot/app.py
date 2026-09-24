@@ -21,6 +21,7 @@ from db_copilot.schema_introspection import (
     generate_natural_language_docs,
     generate_dbml,
     generate_ddl_preview,
+    generate_single_table_ddl,
     render_dbml_to_svg,
     schema_fingerprint,
 )
@@ -272,42 +273,72 @@ with tab_schema:
     if not tables:
         st.info("No se detectaron tablas en el esquema configurado.")
     else:
-        selected_table = st.selectbox("Tabla", options=list(tables.keys()))
+        selected_table = st.selectbox("Seleccionar Tabla", options=list(tables.keys()))
         table_meta = tables[selected_table]
 
-        col_meta, col_preview = st.columns([1, 2])
-        with col_meta:
-            if table_meta.get("comment"):
-                st.info(table_meta["comment"])
-            st.markdown(f"**Filas (estimadas):** `{table_meta.get('row_count', 'N/A')}`")
-            st.markdown(f"**Clave primaria:** `{', '.join(table_meta.get('primary_key', [])) or 'No definida'}`")
-            cols_df = pd.DataFrame(table_meta.get("columns", []))
-            if not cols_df.empty:
-                st.dataframe(cols_df[["name", "type", "nullable", "comment"]], use_container_width=True, height=280)
-            if table_meta.get("foreign_keys"):
-                st.markdown("**Claves foráneas:**")
-                for fk in table_meta["foreign_keys"]:
-                    st.markdown(
-                        f"- `{selected_table}.{','.join(fk['constrained_columns'])}` → "
-                        f"`{fk['referred_table']}.{','.join(fk['referred_columns'])}`"
-                    )
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            pk_str = ", ".join(table_meta.get("primary_key", [])) or "No definida"
+            st.metric("Clave Primaria", pk_str)
+        with col_m2:
+            st.metric("Total Columnas", len(table_meta.get("columns", [])))
+        with col_m3:
+            st.metric("Filas (estimadas)", table_meta.get("row_count", "N/A"))
 
-        with col_preview:
-            st.markdown(f"**Muestra en vivo de `{selected_table}` (10 filas):**")
-            try:
-                engine = st.session_state.active_engine
-                dialect = engine.dialect.name
-                query = (
-                    f'SELECT * FROM "{selected_table}" LIMIT 10'
-                    if dialect == "postgresql" else f"SELECT * FROM {selected_table} LIMIT 10"
-                )
-                with engine.connect() as conn:
-                    sample = pd.read_sql_query(query, conn)
-                st.dataframe(sample, use_container_width=True, height=320)
-            except Exception as exc:
-                st.error(f"No se pudo leer una muestra: {exc}")
+        if table_meta.get("comment"):
+            st.info(f"**Descripción:** {table_meta['comment']}")
 
-        with st.expander("Ver DDL reconstruido de todo el esquema", icon=":material/code:"):
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            st.markdown(f"**Estructura:**")
+            
+            formatted_cols = []
+            pk_set = set(table_meta.get("primary_key", []))
+            
+            fk_map = {}
+            for fk in table_meta.get("foreign_keys", []):
+                for orig_col, ref_col in zip(fk.get("constrained_columns", []), fk.get("referred_columns", [])):
+                    fk_map[orig_col] = f"FK → {fk['referred_table']}({ref_col})"
+
+            for col in table_meta.get("columns", []):
+                name = col["name"]
+                col_type = col["type"]
+                
+                constraints = []
+                if name in pk_set:
+                    constraints.append("PK")
+                if name in fk_map:
+                    constraints.append(fk_map[name])
+                if not col.get("nullable", True) and name not in pk_set:
+                    constraints.append("NOT NULL")
+
+                constraint_str = " | ".join(constraints) if constraints else "-"
+                
+                row = {
+                    "Columna": name,
+                    "Tipo de Dato": col_type,
+                    "Restricciones": constraint_str,
+                }
+                if any(c.get("comment") for c in table_meta.get("columns", [])):
+                    row["Descripción"] = col.get("comment") or "-"
+                formatted_cols.append(row)
+
+            st.dataframe(pd.DataFrame(formatted_cols), use_container_width=True, hide_index=True)
+
+            if table_meta.get("indexes"):
+                st.markdown("**Índices:**")
+                for idx in table_meta["indexes"]:
+                    unique_label = "UNIQUE" if idx.get("unique") else "INDEX"
+                    cols_str = ", ".join(idx.get("column_names", []))
+                    st.markdown(f"- `{idx.get('name')}` ({unique_label}): `{cols_str}`")
+
+        with col_right:
+            st.markdown(f"**Definición SQL:**")
+            table_ddl = generate_single_table_ddl(selected_table, table_meta)
+            st.code(table_ddl, language="sql")
+
+        with st.expander("SQL de todo el esquema", icon=":material/code:"):
             st.code(generate_ddl_preview(meta), language="sql")
 
 with tab_er:

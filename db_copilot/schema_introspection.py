@@ -235,6 +235,29 @@ def generate_natural_language_docs(schema_meta: Dict[str, Any]) -> List[Dict[str
     return docs
 
 
+def generate_single_table_ddl(table_name: str, meta: Dict[str, Any]) -> str:
+    """Genera la definición DDL SQL aproximada para una sola tabla."""
+    lines = []
+    if meta.get("comment"):
+        lines.append(f"-- Descripción: {meta['comment']}")
+    lines.append(f"CREATE TABLE {table_name} (")
+    col_lines = []
+    pk_cols = meta.get("primary_key", [])
+    for col in meta.get("columns", []):
+        pk = " PRIMARY KEY" if col["name"] in pk_cols else ""
+        nullable = "" if col.get("nullable", True) else " NOT NULL"
+        default = f" DEFAULT {col['default']}" if col.get("default") is not None else ""
+        comment = f" -- {col['comment']}" if col.get("comment") else ""
+        col_lines.append(f"    {col['name']} {col['type']}{pk}{nullable}{default}{comment}")
+    for fk in meta.get("foreign_keys", []):
+        col_orig = ", ".join(fk["constrained_columns"])
+        col_dest = ", ".join(fk["referred_columns"])
+        col_lines.append(f"    FOREIGN KEY ({col_orig}) REFERENCES {fk['referred_table']} ({col_dest})")
+    lines.append(",\n".join(col_lines))
+    lines.append(");")
+    return "\n".join(lines)
+
+
 def generate_ddl_preview(schema_meta: Dict[str, Any]) -> str:
     """
     Reconstruye un DDL aproximado y solo descriptivo a partir de los
@@ -246,7 +269,6 @@ def generate_ddl_preview(schema_meta: Dict[str, Any]) -> str:
     lines = []
     tables = schema_meta.get("tables", {})
     for table_name, meta in tables.items():
-        lines.append(f"-- Tabla: {table_name}" + (f" ({meta['comment']})" if meta.get("comment") else ""))
         lines.append(f"CREATE TABLE {table_name} (")
         col_lines = []
         for col in meta.get("columns", []):
