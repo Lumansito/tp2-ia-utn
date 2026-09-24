@@ -1,5 +1,0 @@
-* text=auto eol=lf
-*.bat text eol=crlf
-*.png binary
-*.jpg binary
-*.svg text eol=lf
