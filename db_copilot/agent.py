@@ -1,18 +1,5 @@
 """
 Agente SQL observable, con LangGraph, guardrails y aprobacion humana (HITL).
-
-A diferencia de la version anterior, aca el "modo Agente" corre de verdad un
-agente ReAct de LangGraph (`create_react_agent`): el LLM decide, en cada
-paso, que herramienta usar (buscar en el esquema, describir una tabla,
-ejecutar una lectura, proponer una escritura) en lugar de seguir un pipeline
-fijo de 5 fases escrito a mano. La auto-correccion ante errores de SQL sale
-del mismo mecanismo: si `run_select` devuelve un error como texto, el agente
-lo lee y decide como corregirlo, sin un prompt especial de "fix" aparte.
-
-El estado (ultimo DataFrame, ultima escritura pendiente) ya no es un
-diccionario global compartido por todos los usuarios: vive por `thread_id`
-(una sesion de Streamlit o de notebook). La cola de aprobaciones y la
-auditoria se persisten en SQLite via `audit_store.py`.
 """
 
 import time
@@ -26,7 +13,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import InMemorySaver
 
-from db_copilot.config import get_engine, get_readonly_engine, get_llm, get_fallback_llm
+from db_copilot.config import get_engine, get_llm
 from db_copilot.sql_guard import validate_and_classify_sql
 from db_copilot.rag import retrieve_schema_context, answer_schema_question
 from db_copilot.schema_introspection import introspect_database
@@ -85,9 +72,7 @@ def _dialect() -> str:
 
 def make_tools(thread_id: str):
     """
-    Arma las herramientas del agente para una sesion (`thread_id`) puntual,
-    de forma que `run_select`/`run_write` escriban en el contexto de esa
-    sesion y no en un estado global compartido.
+    Arma las herramientas del agente para una sesion (`thread_id`) puntual.
     """
     ctx = _ctx(thread_id)
 
@@ -131,9 +116,7 @@ def make_tools(thread_id: str):
     def run_select(sql: str) -> str:
         """Ejecuta una sentencia SELECT de solo lectura, previa validacion con los guardrails
         de seguridad (sqlglot). Devuelve un resumen: las filas completas quedan disponibles
-        para la interfaz por separado, no hace falta transcribirlas. Si la consulta falla,
-        el error del motor se devuelve como texto para que puedas corregir el SQL y reintentar
-        vos mismo con una nueva llamada a esta herramienta."""
+        para la interfaz por separado."""
         val = validate_and_classify_sql(sql, default_limit=500, dialect=_dialect())
         if not val["is_valid"] or val["classification"] != "SELECT":
             audit_store.log_event(
@@ -143,7 +126,7 @@ def make_tools(thread_id: str):
             return f"BLOQUEADO por guardrails: {val.get('error') or 'Sentencia no permitida para una lectura.'}"
 
         sanitized = val["sanitized_sql"]
-        engine = get_readonly_engine(default_engine=get_agent_engine())
+        engine = get_agent_engine()
         try:
             with engine.connect() as conn:
                 df = pd.read_sql_query(text(sanitized), conn)
@@ -177,8 +160,7 @@ def make_tools(thread_id: str):
     @tool
     def run_write(sql: str) -> str:
         """Propone una sentencia INSERT, UPDATE o DELETE. Nunca se ejecuta directamente:
-        queda encolada con un ID y espera aprobacion humana explicita en la interfaz antes
-        de impactar la base de datos."""
+        queda encolada con un ID y espera aprobacion humana explicita en la interfaz."""
         val = validate_and_classify_sql(sql, default_limit=500, dialect=_dialect())
         if not val["is_valid"] or val["classification"] != "WRITE":
             audit_store.log_event(
@@ -275,16 +257,7 @@ class DBCopilot:
         if schema_meta is not None:
             set_schema_meta(schema_meta)
 
-        primary_llm = llm or get_llm()
-        try:
-            # `.with_fallbacks` es el mecanismo nativo de LangChain para
-            # degradar a un modelo mas liviano si el principal devuelve un
-            # error (por ejemplo 429/503 por cuota agotada), sin necesidad
-            # de detectar codigos de error a mano en cada llamada.
-            self.llm = primary_llm.with_fallbacks([get_fallback_llm()])
-        except Exception:
-            self.llm = primary_llm
-
+        self.llm = llm or get_llm()
         self.checkpointer = InMemorySaver()
         self._graphs: Dict[str, Any] = {}
 
@@ -344,7 +317,7 @@ class DBCopilot:
             t1 = time.perf_counter()
             rag_res = answer_schema_question(question, llm=self.llm)
             record_step(
-                "Sintesis Conceptual con LLM", f"API Cloud: Gemini ({getattr(self.llm, 'model', '?')})",
+                "Sintesis Conceptual con LLM", f"API Cloud: LLM ({getattr(self.llm, 'model', getattr(self.llm, 'model_name', '?'))})",
                 time.perf_counter() - t1,
                 "Elaboracion de respuesta tecnica contextualizada en el esquema recuperado.",
             )
@@ -363,8 +336,6 @@ class DBCopilot:
                 "finish_time": datetime.now().strftime("%H:%M:%S"),
             }
 
-        # Modo Agente: LangGraph ReAct real, con stream de pasos para no
-        # perder la observabilidad que tenia el pipeline fijo anterior.
         graph = self._graph_for(thread_id)
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 12}
         final_text = ""

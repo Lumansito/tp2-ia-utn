@@ -1,19 +1,21 @@
 """
 DB Copilot -- Interfaz Streamlit (Chat, Esquema, Diagrama ER, Auditoria).
-
-Solo Google Gemini. El esquema se lee siempre en vivo de DATABASE_URL: no hay
-carga manual de un .sql/.json ni botones que recreen o tumben el esquema de
-la base (eso quedo en scripts/seed_demo.py, para correr a mano por consola).
 """
 
 import os
+import sys
 import uuid
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from db_copilot.config import ConfigError, get_engine, get_llm, get_embeddings, get_embedding_model_name
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from db_copilot.config import get_engine, get_llm, get_embeddings
 from db_copilot.schema_introspection import (
     introspect_database,
     generate_natural_language_docs,
@@ -32,7 +34,7 @@ from db_copilot.agent import (
 )
 
 st.set_page_config(
-    page_title="DB Copilot",
+    page_title="DB Copilot — RAG & SQL Enterprise",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -61,8 +63,7 @@ def initialize_system(force_reindex: bool = False) -> bool:
     """
     Arranca el sistema a partir de DATABASE_URL: conecta, introspecciona el
     esquema en vivo, y solo reindexa el RAG si el esquema cambio desde la
-    ultima vez (comparando un fingerprint), para no gastar llamadas a la API
-    de embeddings en cada recarga de la app.
+    ultima vez.
     """
     try:
         engine = get_engine()
@@ -84,12 +85,8 @@ def initialize_system(force_reindex: bool = False) -> bool:
         st.session_state.copilot = DBCopilot(engine=engine, llm=llm, schema_meta=schema_meta)
         st.session_state.init_error = None
         return True
-    except ConfigError as exc:
-        st.session_state.init_error = str(exc)
-        st.session_state.copilot = None
-        return False
     except Exception as exc:
-        st.session_state.init_error = f"Error inesperado al inicializar: {exc}"
+        st.session_state.init_error = str(exc)
         st.session_state.copilot = None
         return False
 
@@ -101,10 +98,13 @@ if st.session_state.copilot is None and st.session_state.init_error is None:
 # Barra lateral
 # -------------------------------------------------------------------------
 with st.sidebar:
-    st.title("⚙️ Entorno")
-    st.caption("Configuracion leida desde `.env`. Unico proveedor: Google Gemini.")
+    st.title("⚙️ Entorno y Configuración")
+    st.caption("Configuración leída desde `.env`.")
 
+    provider_active = os.getenv("LLM_PROVIDER", "").upper() or "NO CONFIGURADO"
+    model_active = os.getenv("LLM_MODEL", "N/A")
     db_url = os.getenv("DATABASE_URL", "")
+
     if db_url.startswith("sqlite"):
         db_type, db_host = "SQLite (local)", db_url.split("///")[-1]
     elif db_url:
@@ -116,40 +116,33 @@ with st.sidebar:
     with st.container(border=True):
         st.markdown(f"**🗄️ Motor:** `{db_type}`")
         st.caption(f"Host: `{db_host}`")
-        st.markdown("**🤖 Proveedor:** `Google Gemini`")
-        st.markdown(f"**🧠 Modelo:** `{os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')}`")
-        st.markdown(f"**🧬 Embeddings:** `{get_embedding_model_name()}`")
+        st.markdown(f"**🤖 Proveedor:** `{provider_active}`")
+        st.markdown(f"**🧠 Modelo:** `{model_active}`")
         if st.session_state.copilot is not None:
             st.success("🟢 Sistema conectado e indexado")
         else:
             st.error("🔴 Sin inicializar")
 
     if st.session_state.init_error:
-        st.error(st.session_state.init_error)
-        if st.button("🔁 Reintentar inicializacion", use_container_width=True):
+        st.error(f"Error: {st.session_state.init_error}")
+        if st.button("🔁 Reintentar inicialización", use_container_width=True):
             initialize_system()
             st.rerun()
 
     st.markdown("---")
-    st.caption(
-        "Este panel no incluye acciones que modifiquen el esquema o los datos "
-        "de la base (sembrado, recreacion, DDL). Eso se hace a proposito desde "
-        "la consola con `scripts/seed_demo.py`, nunca desde un boton de la app."
-    )
     if st.session_state.copilot is not None:
         if st.button("🔄 Resincronizar esquema", use_container_width=True,
-                      help="Vuelve a leer el catalogo en vivo y reindexa el RAG si cambio."):
+                      help="Vuelve a leer el catálogo en vivo y reindexa el RAG si cambió."):
             with st.spinner("Resincronizando esquema..."):
                 initialize_system(force_reindex=True)
             st.rerun()
 
 st.title("🛡️ DB Copilot")
-st.caption("Copiloto RAG + Agente SQL con guardrails y aprobacion humana — TP2 Sistemas Inteligentes, UTN")
 
 if st.session_state.copilot is None:
     st.warning(
-        "El sistema no esta inicializado. Revisa `DATABASE_URL` y `GOOGLE_API_KEY` "
-        "en el `.env` y reintenta desde la barra lateral."
+        "El sistema no está inicializado. Revisá `DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY` y `LLM_MODEL` "
+        "en el `.env` y reintentá desde la barra lateral."
     )
     st.stop()
 
@@ -177,9 +170,9 @@ if pending:
                     st.rerun()
 
 # -------------------------------------------------------------------------
-# Pestanas
+# Pestañas
 # -------------------------------------------------------------------------
-tab_chat, tab_schema, tab_er, tab_audit = st.tabs(["💬 Chat", "📁 Esquema", "📊 Diagrama ER", "📋 Auditoria"])
+tab_chat, tab_schema, tab_er, tab_audit = st.tabs(["Chat", "Esquema", "Diagrama", "Auditoría"])
 
 
 def _render_timeline(timeline):
@@ -190,7 +183,7 @@ def _render_timeline(timeline):
 
 
 with tab_chat:
-    mode_label = st.radio("Modo", ["Agente SQL", "Documentacion (RAG)"], horizontal=True)
+    mode_label = st.radio("Modo", ["Agente SQL", "Documentación (RAG)"], horizontal=True)
     mode = "agent" if mode_label == "Agente SQL" else "schema"
 
     for i, msg in enumerate(st.session_state.messages):
@@ -205,10 +198,10 @@ with tab_chat:
                     file_name="resultado.csv", key=f"csv_hist_{i}",
                 )
             if msg.get("timeline"):
-                with st.expander("⏱️ Detalle de ejecucion"):
+                with st.expander("⏱️ Detalle de ejecución"):
                     _render_timeline(msg["timeline"])
 
-    if question := st.chat_input("Pregunta algo sobre la base de datos..."):
+    if question := st.chat_input("Preguntá algo sobre la base de datos..."):
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
@@ -230,12 +223,12 @@ with tab_chat:
                 )
             if result.get("pending_write"):
                 st.info(
-                    f"Escritura pendiente de aprobacion (ID `{result['pending_write']['id']}`). "
-                    "Mira el panel de arriba."
+                    f"Escritura pendiente de aprobación (ID `{result['pending_write']['id']}`). "
+                    "Mirá el panel superior."
                 )
-            with st.expander("⏱️ Detalle de ejecucion"):
+            with st.expander("⏱️ Detalle de ejecución"):
                 _render_timeline(result["timeline"])
-                st.caption(f"Duracion total: {result['total_duration']}s")
+                st.caption(f"Duración total: {result['total_duration']}s")
 
         st.session_state.messages.append({
             "role": "assistant",
@@ -247,12 +240,9 @@ with tab_chat:
 
 with tab_schema:
     st.subheader("📁 Esquema de la base de datos (solo lectura)")
-    st.caption(
-        "Se lee directamente de `DATABASE_URL`. Para consultar otra base, cambia "
-        "el `.env` y usa 'Resincronizar esquema' en la barra lateral."
-    )
+    st.caption("Se lee directamente de `DATABASE_URL`.")
     meta = st.session_state.schema_meta or {}
-    st.markdown(f"**Motor:** {meta.get('engine', '?')} — **Version:** {meta.get('version', '?')}")
+    st.markdown(f"**Motor:** {meta.get('engine', '?')} — **Versión:** {meta.get('version', '?')}")
 
     tables = meta.get("tables", {})
     if not tables:
@@ -271,7 +261,7 @@ with tab_schema:
             if not cols_df.empty:
                 st.dataframe(cols_df[["name", "type", "nullable", "comment"]], use_container_width=True, height=280)
             if table_meta.get("foreign_keys"):
-                st.markdown("**Claves foraneas:**")
+                st.markdown("**Claves foráneas:**")
                 for fk in table_meta["foreign_keys"]:
                     st.markdown(
                         f"- `{selected_table}.{','.join(fk['constrained_columns'])}` → "
@@ -297,12 +287,12 @@ with tab_schema:
             st.code(generate_ddl_preview(meta), language="sql")
 
 with tab_er:
-    st.subheader("📊 Diagrama Entidad-Relacion (DBML)")
-    st.caption("Generado dinamicamente a partir del esquema en vivo y renderizado como SVG.")
+    st.subheader("📊 Diagrama Entidad-Relación (DBML)")
+    st.caption("Generado dinámicamente a partir del esquema en vivo y renderizado como SVG.")
 
     meta = st.session_state.schema_meta or {}
     if not meta.get("tables"):
-        st.info("No hay informacion de esquema para renderizar el diagrama.")
+        st.info("No hay información de esquema para renderizar el diagrama.")
     else:
         dbml_code = generate_dbml(meta)
         svg_diagram = render_dbml_to_svg(dbml_code)
@@ -333,17 +323,17 @@ with tab_er:
             """
             components.html(svg_html, height=790, scrolling=True)
         else:
-            st.info("No se pudo renderizar el SVG (¿esta Node.js instalado y `npm install` corrido?). Podes ver el codigo DBML abajo.")
+            st.info("No se pudo renderizar el SVG. Podés ver el código DBML abajo.")
 
-        with st.expander("📄 Ver codigo DBML"):
+        with st.expander("📄 Ver código DBML"):
             st.code(dbml_code, language="text")
-            st.markdown("💡 Podes pegar este DBML en [dbdiagram.io](https://dbdiagram.io) para editarlo o compartirlo.")
+            st.markdown("💡 Podés pegar este DBML en [dbdiagram.io](https://dbdiagram.io) para editarlo o compartirlo.")
 
 with tab_audit:
-    st.subheader("📋 Registro de auditoria")
-    st.caption("Incluye todas las sesiones (persistido en `data/audit.sqlite`), no solo la sesion actual.")
+    st.subheader("📋 Registro de auditoría")
+    st.caption("Incluye todas las sesiones (persistido en `data/audit.sqlite`).")
     records = get_audit_log(thread_id=None, limit=300)
     if records:
         st.dataframe(pd.DataFrame(records), use_container_width=True)
     else:
-        st.info("Todavia no hay operaciones registradas.")
+        st.info("Todavía no hay operaciones registradas.")
