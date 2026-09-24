@@ -54,6 +54,42 @@ def _ctx(thread_id: str) -> Dict[str, Any]:
     )
 
 
+def _clean_llm_response(content: Any) -> tuple[str, str]:
+    """
+    Extrae texto limpio y bloques de pensamiento (thinking) de la respuesta del LLM,
+    manejando cadenas simples o listas/diccionarios de bloques estructurados de Gemini.
+    """
+    if not content:
+        return "", ""
+    if isinstance(content, str):
+        return content.strip(), ""
+    if isinstance(content, list):
+        text_parts = []
+        thinking_parts = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict):
+                b_type = block.get("type")
+                if b_type == "text" and "text" in block:
+                    text_parts.append(str(block["text"]))
+                elif b_type == "thinking" and "thinking" in block:
+                    thinking_parts.append(str(block["thinking"]))
+                elif "text" in block:
+                    text_parts.append(str(block["text"]))
+            elif hasattr(block, "text"):
+                text_parts.append(str(block.text))
+        text_res = "\n\n".join(text_parts).strip() if text_parts else str(content)
+        thinking_res = "\n\n".join(thinking_parts).strip()
+        return text_res, thinking_res
+    if isinstance(content, dict):
+        if content.get("type") == "text" and "text" in content:
+            return str(content["text"]).strip(), ""
+        if "text" in content:
+            return str(content["text"]).strip(), ""
+    return str(content).strip(), ""
+
+
 def get_last_dataframe(thread_id: str = "default_session") -> Optional[pd.DataFrame]:
     return _ctx(thread_id).get("last_dataframe")
 
@@ -322,15 +358,16 @@ class DBCopilot:
                 "Elaboracion de respuesta tecnica contextualizada en el esquema recuperado.",
             )
 
+            answer_text, answer_thinking = _clean_llm_response(rag_res["answer"])
             return {
                 "mode": "schema",
-                "response": rag_res["answer"],
+                "response": answer_text,
                 "context": rag_res.get("context", ""),
                 "dataframe": None,
                 "sql": None,
                 "pending_write": None,
                 "timeline": timeline,
-                "thinking": "",
+                "thinking": answer_thinking,
                 "total_duration": round(time.perf_counter() - start_all, 2),
                 "launch_time": launch_time,
                 "finish_time": datetime.now().strftime("%H:%M:%S"),
@@ -339,6 +376,7 @@ class DBCopilot:
         graph = self._graph_for(thread_id)
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 12}
         final_text = ""
+        final_thinking = ""
         tool_calls_seen: List[str] = []
 
         try:
@@ -367,7 +405,11 @@ class DBCopilot:
                             {"content": getattr(m, "content", "")},
                         )
                     elif getattr(m, "content", None):
-                        final_text = str(m.content)
+                        clean_txt, clean_thk = _clean_llm_response(m.content)
+                        if clean_txt:
+                            final_text = clean_txt
+                        if clean_thk:
+                            final_thinking = clean_thk
                         record_step(
                             "Respuesta del Agente", f"Nodo LangGraph: {node}", t_now,
                             "El agente genero una respuesta final en lenguaje natural.",
@@ -383,7 +425,7 @@ class DBCopilot:
             "sql": ctx_after.get("last_sql"),
             "pending_write": ctx_after.get("pending_write"),
             "timeline": timeline,
-            "thinking": "",
+            "thinking": final_thinking,
             "tool_calls": tool_calls_seen,
             "total_duration": round(time.perf_counter() - start_all, 2),
             "launch_time": launch_time,
