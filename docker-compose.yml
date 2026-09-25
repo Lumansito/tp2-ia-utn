@@ -11,6 +11,10 @@ services:
       - "5432:5432"
     volumes:
       - db_copilot_pgdata:/var/lib/postgresql/data
+      # Datos de demo precargados (solo se ejecutan la primera vez, con el volumen vacio).
+      # Si preferis usar tu propia base, dejá DATABASE_URL en .env apuntando a otro servidor
+      # y no hace falta levantar este contenedor.
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
