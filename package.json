@@ -1,0 +1,8 @@
+{
+  "name": "db-copilot-dbml-renderer",
+  "private": true,
+  "description": "Dependencia de Node.js usada por render_dbml.js para generar el SVG del esquema (pestaña Esquema de la app).",
+  "dependencies": {
+    "@softwaretechnik/dbml-renderer": "^1.0.30"
+  }
+}

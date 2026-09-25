@@ -95,6 +95,23 @@ if not errorlevel 1 (
     echo de docker-compose.yml, instala Docker Desktop o levanta esa base a mano.
 )
 
+where node >nul 2>nul
+if not errorlevel 1 (
+    if not exist "node_modules" (
+        echo.
+        echo Instalando dependencia de Node ^(dbml-renderer, para el diagrama del esquema^)...
+        npm install
+        if errorlevel 1 (
+            echo [AVISO] No se pudo instalar la dependencia de Node. El diagrama SVG del
+            echo esquema no va a funcionar, pero el resto de la app si.
+        )
+    )
+) else (
+    echo.
+    echo [AVISO] No se encontro Node.js. El diagrama SVG de la pestana Esquema no
+    echo va a funcionar. Instala Node desde https://nodejs.org/ si lo necesitas.
+)
+
 echo.
 echo ============================================
 echo   Levantando la app en http://localhost:8501
