@@ -284,6 +284,18 @@ def generate_ddl_preview(schema_meta: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _dbml_type(type_str: str) -> str:
+    """
+    Envuelve el tipo entre comillas dobles si contiene espacios (por ejemplo
+    "NUMERIC(10, 2)" o "TIMESTAMP WITHOUT TIME ZONE"): el parser de DBML
+    interpreta un tipo sin comillas como un unico token, y falla apenas
+    encuentra un espacio dentro de el.
+    """
+    if " " in type_str and not (type_str.startswith('"') and type_str.endswith('"')):
+        return f'"{type_str}"'
+    return type_str
+
+
 def generate_dbml(schema_meta: Dict[str, Any]) -> str:
     """Traduce los metadatos de tablas a DBML (Database Markup Language)."""
     lines = []
@@ -297,9 +309,10 @@ def generate_dbml(schema_meta: Dict[str, Any]) -> str:
             if not col.get("nullable", True):
                 attrs.append("not null")
             attrs_str = f" [{', '.join(attrs)}]" if attrs else ""
-            lines.append(f"  {col['name']} {col['type']}{attrs_str}")
+            lines.append(f"  {col['name']} {_dbml_type(col['type'])}{attrs_str}")
         if meta.get("comment"):
-            lines.append(f"  Note: '{meta['comment']}'")
+            safe_comment = meta["comment"].replace("'", "\\'")
+            lines.append(f"  Note: '{safe_comment}'")
         lines.append("}\n")
 
     for table_name, meta in tables.items():
