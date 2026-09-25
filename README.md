@@ -4,9 +4,9 @@
 > Sistema inteligente para consultar, documentar y operar sobre una base de datos relacional
 > mediante RAG y un agente de LangGraph con guardrails de seguridad y aprobación humana (Human-In-The-Loop).
 
-> Documentación extendida en [`docs/`](docs/): estado del proyecto en
-> [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md) y el plan de trabajo en
-> [`docs/02-plan-de-desarrollo.md`](docs/02-plan-de-desarrollo.md).
+> Documentación extendida en [`docs/`](docs/): arquitectura detallada en
+> [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md) y qué falta en
+> [`docs/03-proximos-pasos.md`](docs/03-proximos-pasos.md).
 
 ---
 
@@ -39,7 +39,7 @@ cuellos de botella para analistas y equipos de negocio.
     sobre el esquema introspectado    list_tables, describe_table,
     en vivo desde DATABASE_URL        retrieve_schema, run_select, run_write
               │                                 │
-     Síntesis con Gemini                Guardrails (sqlglot AST)
+     Síntesis con el LLM configurado     Guardrails (sqlglot AST)
                                                  │
                                    ┌─────────────┴─────────────┐
                                    ▼                            ▼
@@ -63,26 +63,25 @@ realmente consultaba.
 ```
 tp2-ia-utn/
 ├── db_copilot/
-│   ├── config.py                 # .env, engine SQLAlchemy, LLM y embeddings de Gemini (sin fallback)
+│   ├── config.py                 # .env, engine SQLAlchemy, LLM y embeddings (OpenAI o Gemini)
 │   ├── schema_introspection.py   # Introspección en vivo del catálogo, docs NLP para el RAG, DBML/DDL
-│   ├── rag.py                    # Vector store (Chroma) con embeddings de Gemini
+│   ├── rag.py                    # Vector store (Chroma) con los embeddings configurados
 │   ├── sql_guard.py              # Guardrails con sqlglot (AST): clasificación, LIMIT, bloqueo de DDL
 │   ├── agent.py                  # Herramientas @tool, agente ReAct de LangGraph, HITL
 │   ├── audit_store.py            # Auditoría y cola de aprobaciones persistidas en SQLite
 │   └── app.py                    # App Streamlit (Chat, Esquema, Diagrama ER, Auditoría)
 ├── scripts/
-│   ├── seed_demo.py              # Siembra la base de demo (15 tablas) — SOLO por consola, con confirmación
-│   ├── _seed_enterprise_impl.py  # Implementación del sembrado (Faker)
-│   └── test_stream_agent.py      # Script manual para ver los pasos del agente en vivo
-├── sql/
-│   └── complex_enterprise_schema.sql   # DDL de referencia de las 15 tablas de demo
-├── tests/                         # pytest: sql_guard, config, introspección (sin red ni API)
-├── notebooks/demo.ipynb          # Notebook de la cátedra (a rehacer para la entrega final)
-├── material-catedra/             # Notebooks de la materia, no forman parte del proyecto
-├── docs/                          # Documentación del estado del proyecto y plan de trabajo
-├── render_dbml.js                # Renderiza el DBML a SVG (opcional, requiere Node.js)
-├── start_app.bat                 # Windows: instala dependencias, prepara .env y levanta la app
-├── seed_demo.bat                 # Windows: siembra la base de demo (wrapper de scripts/seed_demo.py)
+│   ├── generate_demo_sql.py      # Genera el SQL de la base de demo (Faker, seed fijo)
+│   └── verify_demo_db.py         # Verifica que la base de demo de Docker haya cargado bien
+├── docker/
+│   └── init/01_schema_and_seed.sql   # Salida de generate_demo_sql.py; la corre Postgres solo al iniciar
+├── docker-compose.yml             # Postgres con la base de demo precargada (puerto configurable)
+├── tests/                         # pytest: sql_guard, config, introspección, herramientas del agente
+├── notebooks/demo.ipynb          # Pendiente: se rehace al final, para la entrega (ver docs/03)
+├── docs/                          # Documentación de arquitectura, estado y próximos pasos
+├── render_dbml.js                # Renderiza el DBML a SVG (Node.js + @softwaretechnik/dbml-renderer)
+├── package.json / package-lock.json   # Dependencia de Node de render_dbml.js
+├── start_app.bat                 # Windows: venv, dependencias, Docker, Node y levanta la app
 ├── requirements.txt
 └── .env.example
 ```
@@ -102,16 +101,14 @@ Para no tener que instalar nada a mano, en Windows alcanza con hacer doble clic 
 2. Crea un entorno virtual en `.venv` (la primera vez) y lo activa.
 3. Instala/actualiza las dependencias de `requirements.txt`.
 4. Si no existe `.env`, lo crea a partir de `.env.example` y lo abre en el Bloc de notas para
-   que completes `DATABASE_URL` y `GOOGLE_API_KEY` (avisa y no continúa si te olvidaste de
-   cambiar la clave de ejemplo).
-5. Levanta la app con `streamlit run db_copilot/app.py` en `http://localhost:8501`.
+   que completes `LLM_PROVIDER`, `LLM_API_KEY`, etc. (avisa y no continúa si te olvidaste de
+   cambiar la clave de ejemplo o la dejaste vacía).
+5. Si encuentra Docker, levanta la base de datos con `docker compose up -d` (precargada con datos
+   de demo — ver más abajo). Si tu `DATABASE_URL` apunta a otra base, este paso se puede ignorar.
+6. Si encuentra Node.js y falta `node_modules`, corre `npm install` (dependencia opcional para el
+   diagrama SVG del esquema).
+7. Levanta la app con `streamlit run db_copilot/app.py` en `http://localhost:8501`.
 
-Para sembrar la base de demo (15 tablas con Faker) también en Windows, corré
-[`seed_demo.bat`](seed_demo.bat) (usa el mismo `.venv` que crea `start_app.bat`, así que corré
-ese primero al menos una vez). Te pasa cualquier argumento extra a `scripts/seed_demo.py`, por
-ejemplo `seed_demo.bat --orders 500`.
-
-Estos dos `.bat` no reemplazan nada de lo de abajo: solo automatizan los mismos pasos manuales.
 Si preferís hacerlo a mano, o estás en Linux/Mac, seguí con la opción manual.
 
 ### Opción manual
@@ -124,10 +121,10 @@ Requiere Python 3.10+.
 pip install -r requirements.txt
 ```
 
-Opcional, solo para renderizar el diagrama ER a SVG:
+Opcional, solo para renderizar el diagrama ER a SVG (requiere Node.js):
 
 ```bash
-npm install @softwaretechnik/dbml-renderer
+npm install
 ```
 
 #### 2. Configurar el `.env`
@@ -136,26 +133,50 @@ npm install @softwaretechnik/dbml-renderer
 cp .env.example .env
 ```
 
-Como mínimo hacen falta:
+`LLM_PROVIDER` acepta **`OPENAI`** o **`GEMINI`**: solo hace falta configurar el proveedor que vayas a
+usar (no ambos). Como mínimo:
 
 ```env
 DATABASE_URL=postgresql+psycopg2://usuario:password@localhost:5432/mi_base
-GOOGLE_API_KEY=tu-api-key-de-gemini
+
+LLM_PROVIDER=GEMINI
+LLM_API_KEY=tu-api-key
+LLM_MODEL=gemini-3.8-flash
+EMBEDDING_MODEL=models/gemini-embedding-001
 ```
 
-Solo se usa **Google Gemini**: no hay soporte para OpenAI ni un vectorizador local de respaldo. Si falta
-`GOOGLE_API_KEY`, la app **no arranca** (a propósito: preferimos un error claro antes que un modo
-degradado sin embeddings semánticos).
+(Para OpenAI: `LLM_PROVIDER=OPENAI`, `LLM_MODEL=gpt-4o-mini`, `EMBEDDING_MODEL=text-embedding-3-small`,
+por ejemplo). Si falta cualquiera de estas variables, la app **no arranca** con un error claro
+(a propósito: preferimos eso antes que un modo degradado).
 
-#### 3. (Opcional) Sembrar la base de demo
+> Los nombres de modelo cambian con el tiempo (a nosotros ya nos pasó: `gemini-2.5-flash` dejó de
+> estar disponible para claves nuevas). Si el arranque tira un error `NOT_FOUND` o `model no longer
+> available`, confirmá el nombre vigente en la documentación del proveedor y actualizá `LLM_MODEL`.
 
-Si no tenés una base propia para probar, `scripts/seed_demo.py` crea el modelo de 15 tablas de
-e-commerce con datos generados con Faker. **No es un botón de la app**: recrear el esquema de una base
-de datos es una acción irreversible y deliberadamente no está a un click de distancia.
+#### 3. Base de datos: la tuya, o la de demo con Docker
+
+Si ya tenés una base propia, apuntá `DATABASE_URL` a ella y listo — no hace falta nada más de esta
+sección.
+
+Si no tenés una base para probar, `docker-compose.yml` levanta un Postgres con una base de demo de
+e-commerce **ya cargada** (categorías, productos, clientes, órdenes, ítems y pagos, generados con
+Faker):
 
 ```bash
-python scripts/seed_demo.py --url "sqlite:///data/ecommerce.db" --orders 1500
+docker compose up -d
 ```
+
+La primera vez que el contenedor arranca con el volumen vacío, Postgres corre automáticamente
+`docker/init/01_schema_and_seed.sql` (generado por `scripts/generate_demo_sql.py`). Para confirmar que
+cargó bien:
+
+```bash
+python scripts/verify_demo_db.py
+```
+
+Si el puerto `5432` ya está ocupado en tu máquina (otro Postgres local, u otro proyecto con Docker),
+definí `POSTGRES_PORT` en tu `.env` (por ejemplo `5433`) y actualizá el puerto en `DATABASE_URL`
+también.
 
 #### 4. Ejecutar la app
 
@@ -165,7 +186,8 @@ streamlit run db_copilot/app.py
 
 Se abre en `http://localhost:8501`. Desde ahí podés:
 - alternar entre **Modo Agente** y **Modo Documentación (RAG)**;
-- ver el esquema de la base en vivo, su diagrama ER y una muestra de cada tabla (todo de solo lectura);
+- ver el esquema de la base en vivo, su diagrama ER y el DDL reconstruido de cada tabla (todo de
+  solo lectura);
 - aprobar o rechazar las escrituras (`INSERT`/`UPDATE`/`DELETE`) que proponga el agente;
 - consultar el log de auditoría completo.
 
@@ -191,21 +213,25 @@ bloquea sin excepción `DROP`/`ALTER`/`CREATE`/`TRUNCATE`. `INSERT`/`UPDATE`/`DE
 quedan retenidos para aprobación humana.
 
 ### 4. Human-in-the-Loop persistente
-Toda escritura propuesta por el agente queda en una cola de aprobación (`data/audit.sqlite`) con un ID
-único. Solo se ejecuta contra la base cuando un operador la aprueba explícitamente desde la interfaz.
-A diferencia de la primera versión, esto y el log de auditoría sobreviven a un reinicio de la app y no
-se comparten entre sesiones de distintos usuarios.
+Toda escritura propuesta por el agente queda en una cola de aprobación (`data/audit.sqlite`, ver
+`audit_store.py`) con un ID único. Solo se ejecuta contra la base cuando un operador la aprueba
+explícitamente desde la interfaz. Auditoría y cola sobreviven a un reinicio de la app y no se
+comparten entre sesiones de distintos usuarios (separadas por `thread_id`).
 
 ### 5. Esquema siempre en vivo, sin sinónimos escritos a mano
 La introspección lee `COMMENT ON TABLE`/`COMMENT ON COLUMN` de la propia base como contexto de
 negocio para el RAG, en vez de un diccionario de sinónimos fijo pensado para un único modelo de datos.
 Esto permite apuntar `DATABASE_URL` a cualquier base y que el sistema siga funcionando.
 
-### 6. Solo Gemini, con degradación explícita ante fallas
-El LLM y los embeddings usan exclusivamente la API de Google Gemini. El respaldo ante un error 429/503
-usa `.with_fallbacks(...)` de LangChain (un modelo Flash-Lite más liviano), en vez de detectar códigos
-de error a mano. Si falta la API key, la aplicación no arranca: no hay fallback a un vectorizador local
-sin significado semántico.
+### 6. Proveedor de LLM configurable, sin degradación silenciosa
+`config.py` es genérico: `LLM_PROVIDER` elige entre Gemini y OpenAI, y solo hace falta la clave del
+proveedor que se vaya a usar. Si falta cualquier variable de configuración (proveedor, clave, modelo),
+la aplicación **no arranca** — no hay fallback a un vectorizador local sin significado semántico.
+
+### 7. Base de demo reproducible en Docker
+Para que cualquiera del equipo pueda probar la app sin armar su propia base, `docker-compose.yml`
+precarga un Postgres con datos de demo generados de forma determinística (Faker con seed fijo). Quien
+ya tenga su base solo cambia `DATABASE_URL` y no necesita este contenedor.
 
 ---
 
@@ -215,17 +241,20 @@ sin significado semántico.
 pytest
 ```
 
-Los tests de `sql_guard`, `config` e introspección no requieren red ni credenciales (usan SQLite en
-memoria y validan que las factories fallen con un error claro cuando falta configuración). No hay un
-test automático contra la API real de Gemini: eso se verifica a mano con `scripts/test_stream_agent.py`.
+Los tests de `sql_guard`, `config`, introspección y las herramientas del agente (`tests/`) no requieren
+red ni credenciales: usan SQLite en memoria y validan que las factories fallen con un error claro
+cuando falta configuración, y que los guardrails y el flujo de aprobación (HITL) funcionen de punta a
+punta sin un LLM real. No hay un test automático contra la API real de un LLM: eso se prueba a mano
+corriendo la app.
 
 ---
 
 ## ⚠️ Notas para la defensa
 
-- Los nombres de modelo de Gemini configurados en `.env.example` cambian con frecuencia; confirmarlos
-  en [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models) antes de una
-  demo importante.
-- El notebook de entrega (`notebooks/demo.ipynb`) todavía corresponde a la versión anterior del
-  proyecto y se va a rehacer al final, una vez cerrada la app (ver `docs/02-plan-de-desarrollo.md`,
-  fase 8).
+- Los nombres de modelo (Gemini u OpenAI) cambian con frecuencia; confirmá el que tengas en
+  `LLM_MODEL` antes de una demo importante (ver la nota en la sección de `.env` más arriba).
+- El notebook de entrega (`notebooks/demo.ipynb`) todavía corresponde a una versión anterior del
+  proyecto y se va a rehacer al final, una vez cerrada la app — ver
+  [`docs/03-proximos-pasos.md`](docs/03-proximos-pasos.md).
+- Detalle de arquitectura módulo por módulo, y las dificultades encontradas durante el desarrollo
+  (útiles para la defensa oral), están en [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md).

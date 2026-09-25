@@ -1,11 +1,9 @@
-# DB Copilot: documentación del estado actual
+# DB Copilot: documentación técnica actual
 
-> **Nota (23/09/2026):** este documento describe el estado del proyecto **antes** del refactor (commit `ec1f291`). Se deja como referencia historica de los problemas detectados y por que se tomo cada decision. El estado real del codigo hoy esta en [`00-estado-de-implementacion.md`](00-estado-de-implementacion.md) y en el [`README.md`](../README.md) de la raiz.
-
-
-> **Qué es este documento:** describe lo que el código hace **hoy** (commit `ec1f291`, 23/09/2026), no lo que dice el README. Cuando la documentación existente (`README.md`, `documentacion general del proyecto.md`) no coincide con el código, se aclara en la [sección 9](#9-diferencias-entre-la-documentación-existente-y-el-código).
->
-> El plan de cambios está en [`02-plan-de-desarrollo.md`](02-plan-de-desarrollo.md).
+> **Estado:** este documento describe el código **tal como está hoy** (25/09/2026), después del
+> refactor de las fases 0 a 7 del [plan de desarrollo](02-plan-de-desarrollo.md) y de los ajustes que
+> hizo el equipo sobre esa base (configuración genérica de `.env`, rediseño de la UI, base de demo en
+> Docker). Qué falta todavía está en [`03-proximos-pasos.md`](03-proximos-pasos.md).
 
 ---
 
@@ -25,16 +23,25 @@
 | Fechas de defensa | Tarde/noche: **mié 30/09** y **mié 14/10**. Mañana: **jue 01/10** y **jue 08/10** |
 | Extra | En la defensa hacen 1 o 2 preguntas sobre el **TP1** (clasificación de alumnos con redes neuronales) |
 
+DB Copilot cubre el enfoque de **agente + RAG combinados**: RAG puro para preguntas de esquema, y un
+agente ReAct de LangGraph con herramientas (incluida una de recuperación semántica) para consultas y
+modificaciones de datos.
+
 ---
 
 ## 2. Qué es DB Copilot
 
-Un asistente que permite consultar una base de datos relacional (PostgreSQL o SQLite) en lenguaje natural. El caso de negocio: en las empresas, entender el modelo de datos y escribir SQL correcto depende de pocas personas (DBAs o seniors), y eso genera cuellos de botella.
+Un asistente que permite consultar y operar sobre una base de datos relacional (PostgreSQL o SQLite)
+en lenguaje natural. El caso de negocio: en las empresas, entender el modelo de datos y escribir SQL
+correcto depende de pocas personas (DBAs o seniors), y eso genera cuellos de botella para el resto.
 
 Tiene dos modos de uso:
 
-1. **Modo Documentación (RAG):** responde preguntas sobre la **estructura** de la base (tablas, columnas, relaciones, índices) sin ejecutar SQL.
-2. **Modo Agente SQL:** convierte un pedido en SQL, lo valida con guardrails, lo ejecuta (lecturas) o lo deja pendiente de aprobación humana (escrituras) y muestra el resultado en una tabla.
+1. **Modo Documentación (RAG):** responde preguntas sobre la **estructura** de la base (tablas,
+   columnas, relaciones, índices) sin ejecutar SQL.
+2. **Modo Agente SQL:** un agente decide qué herramientas usar para convertir un pedido en SQL,
+   validarlo con guardrails, ejecutarlo (lecturas) o dejarlo pendiente de aprobación humana
+   (escrituras), y mostrar el resultado en una tabla.
 
 ---
 
@@ -42,14 +49,15 @@ Tiene dos modos de uso:
 
 | Capa | Tecnología |
 |---|---|
-| LLM | Gemini (`langchain-google-genai`) u OpenAI (`langchain-openai`), elegido por `.env` |
-| Embeddings | OpenAI `text-embedding-3-small` **o**, si no hay clave de OpenAI, `LocalHashEmbeddings` (HashingVectorizer de scikit-learn) |
-| Vector store | ChromaDB (`langchain-chroma`), persistido en `data/chroma_db` |
-| Orquestación | LangChain (LCEL en el modo RAG) y LangGraph (`create_react_agent`, **armado pero sin usar**, ver §6.3) |
+| LLM | Gemini (`langchain-google-genai`) **o** OpenAI (`langchain-openai`), elegido por `LLM_PROVIDER` en `.env` |
+| Embeddings | Del mismo proveedor elegido: `GoogleGenerativeAIEmbeddings` o `OpenAIEmbeddings` |
+| Vector store | ChromaDB (`langchain-chroma`), persistido en `data/chroma_db`, con la colección nombrada según el modelo de embeddings activo |
+| Orquestación | LangGraph `create_react_agent` (modo Agente, con checkpointer `InMemorySaver` por sesión) y LCEL (modo Documentación) |
 | Base de datos | SQLAlchemy 2 + psycopg2 (PostgreSQL) o SQLite |
-| Guardrails SQL | `sqlglot` (AST) con una alternativa por regex si `sqlglot` no está instalado |
+| Guardrails SQL | `sqlglot` (parser AST), sin alternativa por regex |
+| Auditoría / HITL | SQLite local (`data/audit.sqlite`), separado por `thread_id` de sesión |
 | UI | Streamlit |
-| Datos de prueba | Faker (`es_ES`) |
+| Datos de demo | Faker (seed fijo), precargados en un Postgres de `docker-compose.yml` |
 | Diagramas | DBML generado en Python, renderizado a SVG con Node (`@softwaretechnik/dbml-renderer`) |
 
 ---
@@ -61,46 +69,46 @@ tp2-ia-utn/
 ├── db_copilot/
 │   ├── __init__.py
 │   ├── config.py                 # .env, engine SQLAlchemy, fábricas de LLM y embeddings
-│   ├── schema_introspection.py   # Lee el catálogo de la base → metadatos → textos para el RAG + DBML
+│   ├── schema_introspection.py   # Introspección en vivo, documentos NLP para el RAG, DBML/DDL
 │   ├── rag.py                    # Chroma: indexado, retriever balanceado, respuesta modo Documentación
 │   ├── sql_guard.py              # Validación y clasificación de SQL con sqlglot
-│   ├── agent.py                  # Herramientas @tool, pipeline del modo Agente, HITL, auditoría
-│   ├── app.py                    # App Streamlit (5 pestañas)
-│   ├── seed_enterprise.py        # Crea (DROP SCHEMA CASCADE) y llena el modelo de 15 tablas
-│   └── seed_data.py              # Modelo alternativo de 4 tablas (lo usa el notebook)
-├── sql/
-│   ├── complex_enterprise_schema.sql   # DDL de las 15 tablas
-│   └── schema_seed.sql                 # DDL de las 4 tablas
-├── notebooks/demo.ipynb          # Notebook de demo (sin ejecutar, no llama al LLM)
-├── render_dbml.js                # Script Node que pasa DBML a SVG
-├── test_pipeline.py              # Script suelto: copia vieja del pipeline del agente
-├── test_stream.py                # Script suelto: prueba del agente ReAct de LangGraph con streaming
-├── NLP_1_Conceptos (1).ipynb     # Material de la cátedra (no es parte del proyecto)
-├── NLP_3_langchain_conversaciones_rag_v2.ipynb   # Material de la cátedra
-├── NLP_4_langchain_agentes.ipynb                 # Material de la cátedra
-├── Trabajo Práctico N2.pdf       # Consigna
-├── README.md
-├── documentacion general del proyecto.md
+│   ├── agent.py                  # Herramientas @tool, agente ReAct de LangGraph, HITL
+│   ├── audit_store.py            # Auditoría y cola HITL persistidas en SQLite
+│   └── app.py                    # App Streamlit (Chat, Esquema, Diagrama ER, Auditoría)
+├── scripts/
+│   ├── generate_demo_sql.py      # Genera docker/init/01_schema_and_seed.sql (Faker, seed fijo)
+│   └── verify_demo_db.py         # Verifica que la base de demo de Docker cargó bien
+├── docker/init/01_schema_and_seed.sql   # Se ejecuta solo al iniciar Postgres con el volumen vacío
+├── docker-compose.yml
+├── tests/                         # pytest: sql_guard, config, introspección, herramientas del agente
+├── notebooks/demo.ipynb          # Pendiente de rehacer para la entrega (fase 8)
+├── docs/                          # Esta documentación
+├── render_dbml.js                # Node: DBML → SVG
+├── package.json / package-lock.json
+├── start_app.bat
 ├── requirements.txt
 └── .env.example
 ```
 
-`data/` (base SQLite y Chroma) se crea sola al importar `config.py` y está en `.gitignore`.
+`data/` (SQLite del audit log y Chroma) se crea sola al importar `config.py` y está en `.gitignore`.
 
 ---
 
 ## 5. Configuración actual (`.env`)
 
-| Variable | Uso actual | Valor por defecto si falta |
+| Variable | Uso | Obligatoria |
 |---|---|---|
-| `DATABASE_URL` | Conexión de SQLAlchemy | `postgresql+psycopg2://postgres:postgres@localhost:5432/ecommerce_db` |
-| `LLM_PROVIDER` | `OPENAI`, `GEMINI` o `AUTO` | `AUTO` (elige según las claves que encuentre) |
-| `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM y embeddings de OpenAI | `gpt-4o-mini` |
-| `GOOGLE_API_KEY` / `GEMINI_MODEL` | LLM de Gemini | `gemini-3.5-flash-lite` en `config.py`, pero la barra lateral de la app muestra `gemini-3.6-flash` como defecto (inconsistencia) |
+| `DATABASE_URL` | Conexión de SQLAlchemy a la base a consultar | Sí |
+| `LLM_PROVIDER` | `OPENAI` o `GEMINI` | Sí |
+| `LLM_API_KEY` | Clave del proveedor elegido | Sí |
+| `LLM_MODEL` | Modelo de lenguaje (ej. `gemini-3.8-flash`, `gpt-4o-mini`) | Sí |
+| `EMBEDDING_MODEL` | Modelo de embeddings del mismo proveedor | Sí |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Solo si se usa el Postgres de `docker-compose.yml` | No |
+| `POSTGRES_PORT` | Puerto host del Postgres de Docker (default `5432`) | No |
+| `DB_SCHEMA` | Restringe la introspección a un schema puntual de Postgres | No |
 
-Para levantarla: `pip install -r requirements.txt` y después `streamlit run db_copilot/app.py`.
-
-> `requirements.txt` **no incluye** `langchain-chroma` ni `scikit-learn`, y el código importa los dos. En una instalación limpia la app falla.
+Si falta cualquiera de las variables obligatorias, `config.py` lanza un `ValueError` con el nombre de
+la variable faltante y la app no arranca — no hay modo degradado.
 
 ---
 
@@ -108,103 +116,122 @@ Para levantarla: `pip install -r requirements.txt` y después `streamlit run db_
 
 ### 6.1 `config.py`
 - Carga `.env`, crea `data/` y `data/chroma_db/`.
-- `get_engine(url)`: normaliza `postgresql://` a `postgresql+psycopg2://`. En SQLite pasa `check_same_thread=False`.
-- `get_llm(provider, api_key, model_name, temperature=0)`:
-  - en modo `AUTO` elige Gemini u OpenAI mirando el formato de las claves;
-  - con Gemini intenta activar `thinking_config={"include_thoughts": True}` para poder mostrar el razonamiento del modelo.
-- `get_embeddings()`: si el proveedor es OpenAI y hay clave real, usa `text-embedding-3-small`. **En cualquier otro caso (incluido usar Gemini) usa `LocalHashEmbeddings`**, un `HashingVectorizer` de 1024 dimensiones. No es un embedding semántico: compara palabras (hashing de tokens), no significado.
+- `get_engine(url)`: normaliza `postgresql://` a `postgresql+psycopg2://`. En SQLite pasa
+  `check_same_thread=False`.
+- `get_llm(temperature=0.0)`: lee `LLM_PROVIDER`/`LLM_API_KEY`/`LLM_MODEL` y arma `ChatOpenAI` o
+  `ChatGoogleGenerativeAI` (con `thinking_config={"include_thoughts": True}` para exponer el
+  razonamiento del modelo en la UI). Sin alguna de las tres variables, o con un proveedor no
+  reconocido, lanza `ValueError`.
+- `get_embeddings()`: misma lógica que `get_llm()`, pero para `OpenAIEmbeddings` /
+  `GoogleGenerativeAIEmbeddings`, usando `EMBEDDING_MODEL`.
 
 ### 6.2 `schema_introspection.py`
-- `introspect_database(engine)`: usa `sqlalchemy.inspect()` para leer tablas, columnas (tipo, nulabilidad, default), PK, FK e índices. Además hace un `SELECT COUNT(*)` por tabla y consulta la versión del motor.
-- `parse_ddl_schema(sql)` y `parse_json_schema(json)`: arman los mismos metadatos a partir de un `.sql` o `.json` subido, sin conectarse a la base.
-- `generate_natural_language_docs(meta)`: arma los documentos del RAG:
-  - 1 documento del motor;
-  - 1 por tabla (columnas, tipos, PK, cantidad de filas);
-  - 1 por cada FK;
-  - 1 por cada índice.
-  - Cada documento lleva la metadata `tipo` (`motor | tabla | relacion | indice`) y `nombre`.
-  - **Tiene un diccionario de sinónimos escrito a mano** (`synonyms_map`) solo para las 15 tablas del e-commerce de demo. Incluye la aclaración "customers no tiene columna `name`". Con otra base, esas pistas no existen.
-- `generate_dbml(meta)` y `render_dbml_to_svg(dbml)`: generan el diagrama ER llamando a `node render_dbml.js`.
+- `introspect_database(engine, schema=None)`: usa `sqlalchemy.inspect()` para leer tablas, columnas
+  (tipo, nulabilidad, default, comentario), PK, FK e índices, más `COMMENT ON TABLE` de cada tabla. La
+  cantidad de filas la estima con `pg_class.reltuples` en Postgres (no `COUNT(*)`, para no ser lento en
+  bases grandes) y con `COUNT(*)` en SQLite.
+- `schema_fingerprint(meta)`: hash estable de tablas/columnas/FK, para decidir si hace falta reindexar
+  el RAG (evita llamar a la API de embeddings en cada arranque si el esquema no cambió).
+- `generate_natural_language_docs(meta)`: arma los documentos para indexar en el RAG — 1 documento del
+  motor, 1 por tabla (con su `COMMENT ON TABLE`/`COMMENT ON COLUMN` si existen), 1 por cada FK y 1 por
+  cada índice.
+- `generate_ddl_preview(meta)` / `generate_single_table_ddl(name, meta)`: reconstruyen un DDL
+  aproximado (no necesariamente ejecutable) para mostrar en la pestaña Esquema.
+- `generate_dbml(meta)` / `render_dbml_to_svg(dbml)`: arman el diagrama ER llamando a
+  `node render_dbml.js` (si Node no está disponible, la UI muestra el DBML en texto sin el SVG).
 
 ### 6.3 `rag.py`
-- `index_schema_documents(docs)`: aplica `RecursiveCharacterTextSplitter` (700 caracteres, overlap 80), **resetea la colección** `db_schema_docs` y vuelve a indexar todo.
-- `retrieve_schema_context(query, k=4)`: recuperación "balanceada":
-  1. hasta `max(k,4)` documentos filtrando por `tipo=tabla`;
-  2. hasta `max(k-1,3)` documentos filtrando por `tipo=relacion`;
-  3. si no trae nada, una búsqueda sin filtro.
-
-  Devuelve todo concatenado como texto con encabezados `[TABLA: x]`.
-- `answer_schema_question(query)`: **modo Documentación**. Cadena LCEL `ChatPromptTemplate | llm | StrOutputParser` con la instrucción de responder solo con el contexto recuperado. Si el LLM falla, devuelve el contexto crudo con una nota.
+- `_collection_name()`: la colección de Chroma incluye el nombre del modelo de embeddings activo, para
+  no mezclar vectores de distinta dimensión si se cambia de modelo.
+- `index_schema_documents(docs)`: aplica `RecursiveCharacterTextSplitter` (700 caracteres, overlap 80),
+  resetea la colección y vuelve a indexar todo.
+- `retrieve_schema_context(query, k=4)`: recuperación balanceada — hasta `max(k,4)` documentos de tipo
+  `tabla` y hasta `max(k-1,3)` de tipo `relacion`; si no trae nada, hace una búsqueda sin filtro.
+- `answer_schema_question(query)`: **modo Documentación**. Cadena LCEL
+  `ChatPromptTemplate | llm | StrOutputParser`, con la instrucción de responder solo con el contexto
+  recuperado.
 
 ### 6.4 `sql_guard.py`: `validate_and_classify_sql(sql, default_limit=500, dialect)`
 
 | Entrada | Clasificación | Qué hace |
 |---|---|---|
 | Vacío o con error de sintaxis | `INVALID` | Rechaza |
-| Más de una sentencia (`;`) | `FORBIDDEN` | Rechaza |
-| `SELECT` (incluye `WITH ... SELECT`) | `SELECT` | Si no tiene `LIMIT`, le agrega `LIMIT 500` en el AST |
-| `UPDATE` / `DELETE` | `WRITE` | Válido. Si no tiene `WHERE`, agrega una advertencia |
-| `DROP`, `ALTER`, `CREATE`, **`INSERT`**, `TRUNCATE`, `Command` | `FORBIDDEN` | Rechaza |
-| Cualquier otro nodo, **incluido `UNION`/`INTERSECT`/`EXCEPT`** | `FORBIDDEN` | Rechaza. En sqlglot, `UNION` es `exp.Union`, no `exp.Select`, así que hoy se bloquean consultas de lectura legítimas |
+| Más de una sentencia encadenada | `FORBIDDEN` | Rechaza |
+| `SELECT`, o `UNION`/`INTERSECT`/`EXCEPT`/`WITH` de `SELECT`s | `SELECT` | Si no tiene `LIMIT`, se lo inyecta en el AST |
+| `INSERT` / `UPDATE` / `DELETE` | `WRITE` | Válido, pero **nunca se ejecuta directamente**: queda pendiente de aprobación humana. En `UPDATE`/`DELETE` sin `WHERE` agrega una advertencia |
+| `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `Command`, `Grant` | `FORBIDDEN` | Rechaza sin excepción |
+| Cualquier otro tipo de nodo AST no contemplado | `FORBIDDEN` | Rechaza |
 
-Si `sqlglot` no está instalado, usa una alternativa por **regex** (mira la primera palabra y si hay `;`). Esto contradice el argumento de "no usamos regex" que da la documentación.
+`sqlglot` es una dependencia obligatoria: no hay alternativa por expresiones regulares (un guardrail
+por regex es evadible con comentarios SQL o cadenas literales).
 
-### 6.5 `agent.py`
-- **Estado global en memoria** (se pierde al reiniciar y es compartido por todos los usuarios de Streamlit):
-  - `_context_store`: último DataFrame, último SQL, escritura pendiente;
-  - `_pending_writes`: la cola de escrituras pendientes;
-  - `_audit_log`: el log de auditoría.
-- **Herramientas `@tool`:**
-  - `retrieve_schema(query)`: llama al retriever;
-  - `run_select(sql)`: guardrail → ejecuta → guarda el DataFrame y **devuelve al LLM solo un resumen** (filas, columnas y 2 filas de muestra);
-  - `run_write(sql)`: guardrail → encola como `PENDING` con un id de 8 caracteres. No ejecuta.
-- `approve_pending_write(id, approve, operator)`: si se aprueba, ejecuta en una transacción (`engine.begin()`) y registra `rowcount`. Si se rechaza, lo marca `REJECTED`. En los dos casos lo audita.
-- `execute_copilot_step_by_step(query, engine, llm)`: **esto es lo que corre de verdad en el modo Agente.** Es un **pipeline fijo** de 5 fases, cada una cronometrada (timeline):
-  1. **RAG:** `retrieve_schema_context(query, k=4)`.
-  2. **LLM:** un prompt que pide responder `TIPO: SELECT|WRITE|CONCEPTUAL / SQL: ... / EXPLICACION: ...`. El SQL se parsea línea por línea y, si no viene en ese formato, se busca un bloque ```` ```sql ````. Si la API devuelve 429/503, se reintenta con `gemini-3.5-flash-lite` (**también cuando el proveedor configurado es OpenAI**).
-  3. **Guardrail:** `validate_and_classify_sql`.
-  4. **Ejecución:**
-     - `SELECT`: se ejecuta con pandas. Si falla, hay **una** vuelta de **auto-corrección**: se le manda al LLM el SQL, el error y el esquema, y se re-valida y re-ejecuta. El prompt de corrección tiene escrita a mano la pista `c.name → first_name/last_name`, que es propia de la base de demo.
-     - `WRITE`: se encola para aprobación humana (HITL).
-  5. **Síntesis:** la respuesta final es la `EXPLICACION` que dio el LLM en el paso 2. No hay una segunda llamada que resuma el resultado real.
-- `SYSTEM_PROMPT`: instrucciones para el agente ReAct (usar `retrieve_schema` antes de escribir SQL, no transcribir filas, etc.).
-- `DBCopilot`:
-  - en `__init__` arma `create_react_agent(llm, tools, SYSTEM_PROMPT, InMemorySaver)`, pero **`ask()` nunca lo usa**. Solo lo prueba `test_stream.py`;
-  - `ask(question, mode="schema")`: RAG y `answer_schema_question`, con timeline;
-  - `ask(question, mode="agent")`: llama a `execute_copilot_step_by_step`.
+### 6.5 `audit_store.py`
+Dos tablas en `data/audit.sqlite`:
+- `audit_log`: cada intento de ejecución (bloqueado, ejecutado, con error), con `thread_id`, SQL,
+  clasificación, filas afectadas y timestamp.
+- `pending_writes`: la cola HITL — cada `INSERT`/`UPDATE`/`DELETE` propuesto por el agente, con estado
+  `PENDING` → `EXECUTED`/`REJECTED`/`EXECUTION_FAILED`.
 
-### 6.6 `app.py` (Streamlit)
-- **Arranque (`initialize_system`)**: `get_engine()` con `DATABASE_URL` → introspección (o parseo de un archivo subido) → documentos NLP → `get_embeddings()` → indexado en Chroma → `DBCopilot`. Si algo falla, guarda el error y la barra lateral muestra "🔴 Error de Conexión".
-- **Barra lateral:**
-  - estado (motor, host, proveedor, modelo);
-  - botón **"💥 Tumbar y Recrear Base Completa"** (`DROP SCHEMA public CASCADE` sobre la base del `.env`);
-  - botón "Reindexar esquema";
-  - uploader de `.sql`/`.json`.
-- **Banner:** escrituras pendientes con los botones ✅ Aprobar / ❌ Rechazar.
+Reemplaza a los diccionarios globales en memoria de la primera versión: sobrevive a un reinicio de la
+app y separa las sesiones (dos pestañas del navegador, o dos usuarios, no se pisan).
+
+### 6.6 `agent.py`
+- **Herramientas (`@tool`)**, armadas por sesión (`make_tools(thread_id)`):
+  - `list_tables()`, `describe_table(table_name)`: metadatos exactos, para que el agente no invente
+    nombres de columnas.
+  - `retrieve_schema(query)`: llama al retriever del RAG.
+  - `run_select(sql)`: guardrail → ejecuta con pandas → guarda el `DataFrame` completo en el contexto
+    de la sesión y devuelve al LLM solo un resumen (filas, columnas, muestra de 2 filas). Si falla,
+    devuelve el error del motor como texto para que el agente lo lea y corrija el SQL él mismo — no
+    hay un prompt de "auto-corrección" aparte.
+  - `run_write(sql)`: guardrail → si es válida, la encola en `audit_store` con un ID y devuelve ese ID.
+    Nunca ejecuta directamente.
+- `approve_pending_write(id, approve, operator)`: el único punto del código que ejecuta una escritura
+  contra la base, dentro de una transacción (`engine.begin()`), y solo tras aprobación explícita.
+- `DBCopilot`: arma un `create_react_agent` de LangGraph por sesión (`_graph_for(thread_id)`), con
+  `InMemorySaver` como checkpointer (memoria de conversación dentro de la sesión de Streamlit).
+  - `ask(question, mode="schema")`: RAG puro (`answer_schema_question`), con timeline de pasos.
+  - `ask(question, mode="agent")`: `graph.stream(..., stream_mode="updates")`, registrando cada
+    decisión del agente y cada resultado de herramienta como un paso de la timeline que se muestra en
+    la UI ("Detalle de ejecución").
+
+### 6.7 `app.py` (Streamlit)
+- **Arranque (`initialize_system`)**: `get_engine()` → introspección → si el fingerprint del esquema
+  cambió, reindexa el RAG → `get_llm()` → `DBCopilot`. Si algo falla, la barra lateral lo muestra con
+  un botón de reintento.
+- **Barra lateral:** información del entorno (motor, versión, host, base, proveedor, modelo) y estado
+  del sistema, con botón para resincronizar el esquema a mano.
+- **Banner de aprobaciones pendientes:** botones Aprobar / Rechazar por cada escritura en cola.
 - **Pestañas:**
-  1. **Chat:** selector de modo, historial, SQL ejecutado, DataFrame con descarga CSV, "thinking" y timeline de fases.
-  2. **Carga y gestión de esquema:** elegir el esquema de 15 o de 4 tablas o subir un `.sql`; "Aplicar a la base" (ejecuta el DDL partido por `;`), "Cargar solo en RAG", "Recrear base y RAG".
-  3. **Diagrama ER (DBML/SVG).**
-  4. **DDL y explorador de tablas** (muestra 10 filas de la tabla elegida).
-  5. **Audit log.**
-
-### 6.7 Datos de demo
-- `seed_enterprise.py`: modelo de e-commerce de **15 tablas** (departments, employees, warehouses, suppliers, categories con auto-referencia, products, inventory, customers, customer_addresses, promotions, orders, order_items, payments, shipments, product_reviews). Hace `DROP SCHEMA public CASCADE` y la app lo llena con 150 órdenes.
-- `seed_data.py`: modelo de **4 tablas** (customers, products, orders, order_items). El notebook lo usa con 1200 órdenes.
+  1. **Chat:** selector Agente / Documentación, historial, SQL ejecutado, DataFrame con descarga CSV,
+     detalle de ejecución (timeline) por mensaje.
+  2. **Esquema:** selector de tabla, métricas (PK, columnas, filas estimadas), estructura con
+     restricciones y FK, DDL de la tabla y de todo el esquema — todo de solo lectura.
+  3. **Diagrama:** DBML descargable y su render SVG (si Node está disponible).
+  4. **Auditoría:** el log completo de `audit_store`.
 
 ---
 
 ## 7. Flujos de punta a punta (como están hoy)
 
-**Modo Documentación:** pregunta → retriever de Chroma (tablas + relaciones) → prompt LCEL → Gemini/OpenAI → respuesta en texto. No toca la base.
+**Modo Documentación:** pregunta → retriever de Chroma (tablas + relaciones) → prompt LCEL → LLM
+configurado → respuesta en texto. No toca la base.
 
-**Modo Agente, lectura:** pregunta → RAG → el LLM genera `TIPO/SQL/EXPLICACION` → sqlglot (y `LIMIT 500` si falta) → pandas `read_sql` → DataFrame a la UI → se muestra la explicación que generó el LLM *antes* de ver los datos.
+**Modo Agente, lectura:** pregunta → el agente decide invocar `retrieve_schema` y/o `describe_table` →
+genera SQL → `run_select` → sqlglot clasifica y agrega `LIMIT` si falta → pandas `read_sql` →
+`DataFrame` a la UI, resumen al agente → respuesta final en lenguaje natural.
 
-**Modo Agente, error de SQL:** falla la ejecución → prompt de corrección (SQL + error + esquema) → nuevo SQL → sqlglot → reintento (una sola vez) → si vuelve a fallar, mensaje de error prolijo.
+**Modo Agente, error de SQL:** `run_select` devuelve el error del motor como texto → el agente lo lee,
+corrige el SQL con la ayuda de `describe_table` si hace falta, y reintenta él mismo (sin límite de
+reintentos fijo más allá del `recursion_limit` del grafo).
 
-**Modo Agente, escritura:** `UPDATE`/`DELETE` → queda `PENDING` en memoria → el operador aprueba en la UI → se ejecuta en una transacción → queda auditado con las filas afectadas.
+**Modo Agente, escritura:** `INSERT`/`UPDATE`/`DELETE` → `run_write` la valida y la encola en
+`audit_store` → aparece en el banner de aprobaciones → el operador aprueba o rechaza desde la UI →
+si se aprueba, se ejecuta en una transacción y queda auditada con las filas afectadas.
 
-**Bloqueo:** `DROP`/`ALTER`/`INSERT`/varias sentencias → `FORBIDDEN` → mensaje de bloqueo. **Ojo:** en el pipeline real los bloqueos **no se registran en el audit log**. Solo lo hacen las herramientas `run_select`/`run_write`, que el pipeline no usa.
+**Bloqueo:** múltiples sentencias, DDL o cualquier SQL inválido → `FORBIDDEN`/`INVALID` → se audita
+igual (a diferencia de la primera versión, todos los bloqueos quedan registrados, no solo los de
+`run_select`/`run_write`).
 
 ---
 
@@ -212,45 +239,47 @@ Si `sqlglot` no está instalado, usa una alternativa por **regex** (mira la prim
 
 | Entregable | Estado |
 |---|---|
-| App funcional | ✅ Funciona con clave y base configuradas. Tiene los problemas de la §10 |
-| Notebook | ⚠️ Existe pero **no está ejecutado**, **no llama al LLM** y probablemente falle el `import db_copilot` al abrirlo desde `notebooks/`. Se va a rehacer al final (ver el plan) |
-| Documentación | ⚠️ Extensa, pero con afirmaciones que no coinciden con el código (§9) |
-| Sección "dificultades" | ❌ No existe |
-| Presentación oral | ❌ No existe |
-| Tests | ❌ Solo hay scripts sueltos, sin asserts |
+| App funcional | ✅ Probada en vivo (Postgres real + LLM real): RAG de esquema, base de demo de Docker cargada y verificada |
+| Guardrails + HITL + auditoría | ✅ Cubiertos por `tests/` sin red ni credenciales |
+| Notebook de entrega | ❌ Pendiente (fase 8), a propósito — ver `03-proximos-pasos.md` |
+| Documentación técnica | ✅ Este documento + `README.md` |
+| Sección "dificultades encontradas" | ✅ Ver sección 9 más abajo |
+| Presentación oral | ❌ Pendiente |
+| Tests automáticos | ✅ `tests/` (sql_guard, config, introspección, herramientas del agente); falta un test automático contra la API real de un LLM (se verifica a mano) |
 
 ---
 
-## 9. Diferencias entre la documentación existente y el código
+## 9. Dificultades encontradas y cómo se resolvieron
 
-| La documentación dice | El código hace |
+Esta sección es material directo para la defensa oral (la consigna pide identificar dificultades).
+
+### 9.1 Dificultades de diseño / código
+
+| Problema detectado | Solución |
 |---|---|
-| "Agentes LangGraph" que deciden qué herramienta usar | El modo Agente es un **pipeline fijo**. El agente ReAct se construye y no se usa |
-| El agente "invoca `retrieve_schema` antes de cada consulta" (prompt obligatorio) | El pipeline llama al retriever directamente. El `SYSTEM_PROMPT` no se usa |
-| Guardrails sin regex | Hay una alternativa por regex si falta `sqlglot` |
-| Se bloquean solo los DDL | También se bloquean `INSERT` y `UNION` |
-| Todo intento bloqueado queda en la auditoría | Los bloqueos del pipeline no se auditan |
-| El LLM resume los resultados después de ejecutar | La "respuesta" es la explicación que dio el LLM antes de ejecutar |
-| Fallback de embeddings "solo si falla la API" | Con Gemini **siempre** se usa HashingVectorizer |
-| El notebook usa 1200 órdenes y 4 tablas, la app usa 15 tablas | Hay dos modelos de datos distintos según dónde se mire |
-| Links `file:///c:/proyectos/tp2-ia-utn/...` | Esa ruta no existe en este equipo |
-| Se "requiere" Python 3.10+ con las dependencias de `requirements.txt` | Faltan `langchain-chroma` y `scikit-learn` |
+| El "modo Agente" armaba un agente ReAct de LangGraph pero en realidad corría un pipeline fijo de 5 pasos que no lo usaba | Se conectó `create_react_agent` de verdad: el LLM decide en cada paso qué herramienta invocar |
+| Los embeddings, incluso configurando Gemini, caían en un `HashingVectorizer` local (compara palabras, no significado) | Se eliminó ese fallback: los embeddings siempre son los del proveedor configurado, o la app no arranca |
+| El guardrail de SQL bloqueaba por error consultas de lectura legítimas con `UNION`/`INTERSECT`/`EXCEPT` (en sqlglot no son `exp.Select`) | Se agregaron esos tipos de nodo AST a la clasificación de lectura |
+| `INSERT` estaba prohibido sin excepción, en vez de pasar por aprobación humana como `UPDATE`/`DELETE` | Se reclasificó como `WRITE` (HITL), consistente con el resto de las escrituras |
+| Auditoría y cola de aprobaciones eran diccionarios globales en memoria: se perdían al reiniciar y se compartían entre todas las sesiones de todos los usuarios | Se persistieron en SQLite (`audit_store.py`), separadas por `thread_id` de sesión |
+| El esquema se cargaba pegando un `.sql`/`.json` a mano, o eligiendo entre dos modelos de datos fijos con sinónimos escritos a mano | La introspección lee siempre `DATABASE_URL` en vivo, y el contexto de negocio sale de `COMMENT ON TABLE/COLUMN` de la propia base — funciona con cualquier esquema |
+| La app tenía un botón que ejecutaba `DROP SCHEMA CASCADE` sobre la base configurada en `.env`, y otro que aplicaba cualquier DDL subido sin pasar por el guardrail | Se eliminaron ambos: sembrar o modificar el esquema es una acción deliberada de consola, no un botón de la UI |
+| Contar filas con `COUNT(*)` en cada tabla en cada arranque, lento en bases grandes | Se usa la estimación de `pg_class.reltuples` en Postgres |
+
+### 9.2 Dificultades de puesta en marcha (probando en una máquina Windows real)
+
+| Problema detectado | Solución |
+|---|---|
+| `uvloop` (dependencia transitiva) no tiene soporte para Windows y rompía `pip install -r requirements.txt` | Se le agregó el marcador de entorno `sys_platform != "win32"` para que se instale solo en Linux/Mac |
+| El puerto `5432` del Postgres de `docker-compose.yml` chocaba con otros contenedores/Postgres locales ya corriendo en la máquina | Se lo hizo configurable con `POSTGRES_PORT` (default `5432`, sin romper a quien no lo necesita) |
+| El modelo `gemini-2.5-flash` dejó de estar disponible para API keys nuevas de Google (`404 NOT_FOUND`) | Se actualizó el default sugerido en `.env.example` a `gemini-3.8-flash`; queda documentado que hay que revisar el modelo vigente antes de una demo |
+| El diagrama SVG del esquema fallaba con `MODULE_NOT_FOUND` porque la dependencia de Node (`@softwaretechnik/dbml-renderer`) nunca se había declarado en un `package.json` ni se instalaba sola | Se agregó `package.json`/`package-lock.json` y se automatizó `npm install` en `start_app.bat` |
 
 ---
 
-## 10. Problemas y deuda técnica detectados
+## 10. Documentación relacionada
 
-1. **Funcionalidad o seguridad**
-   - `UNION`/`INTERSECT`/`EXCEPT` quedan bloqueados (falso positivo del guardrail).
-   - El botón "Tumbar y Recrear Base" hace `DROP SCHEMA public CASCADE` sobre **la base que esté en `.env`**, aunque sea una base real.
-   - "Aplicar SQL a la base" ejecuta cualquier DDL subido, partido por `;`, sin pasar por el guardrail.
-   - El fallback a Gemini aparece aunque se haya elegido OpenAI.
-2. **Generalidad:** los sinónimos y la pista de corrección `c.name` están escritos a mano para la base de demo. Con otra base del `.env`, el RAG pierde contexto de negocio.
-3. **Marco teórico:** con Gemini los embeddings no son semánticos (HashingVectorizer). El "agente" no es un agente.
-4. **Estado:** la cola HITL y la auditoría son globales y viven en memoria. Se pierden al reiniciar y se comparten entre sesiones.
-5. **Rendimiento:** la introspección hace `COUNT(*)` en cada tabla. En una base grande el arranque es lento.
-6. **Repo:**
-   - `requirements.txt` está incompleto;
-   - hay scripts sueltos (`test_*.py`) y notebooks de la cátedra en la raíz;
-   - hay mezcla de finales de línea LF/CRLF: `git status` muestra 23 archivos modificados sin cambios reales;
-   - `test_pipeline.py` duplica el código de `agent.py`.
+- [`README.md`](../README.md): instalación, arquitectura resumida y decisiones de diseño.
+- [`02-plan-de-desarrollo.md`](02-plan-de-desarrollo.md): plan de desarrollo original (registro
+  histórico, ya ejecutado en su mayor parte).
+- [`03-proximos-pasos.md`](03-proximos-pasos.md): qué queda pendiente hoy.
