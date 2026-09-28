@@ -460,7 +460,7 @@ if st.session_state.copilot is None:
     st.stop()
 
 # Banner de aprobaciones pendientes (Human-in-the-Loop)
-pending = get_pending_approvals(thread_id=st.session_state.thread_id)
+pending = get_pending_approvals(thread_id=st.session_state.thread_id) or get_pending_approvals()
 if pending:
     with st.container(key="hitl_panel"):
         st.markdown(
@@ -590,7 +590,11 @@ with tab_chat:
             "dataframe": df,
             "timeline": result["timeline"],
             "total_duration": result.get("total_duration"),
+            "pending_write": result.get("pending_write"),
         })
+
+        if result.get("pending_write"):
+            st.rerun()
 
 with tab_schema:
     st.subheader("Esquema de la base de datos", icon=":material/schema:")
