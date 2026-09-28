@@ -209,9 +209,9 @@ def generate_natural_language_docs(schema_meta: Dict[str, Any]) -> List[Dict[str
         docs.append({"content": doc_table, "metadata": {"tipo": "tabla", "nombre": table_name}})
 
         for fk in meta.get("foreign_keys", []):
-            col_orig = ", ".join(fk["constrained_columns"])
-            tbl_dest = fk["referred_table"]
-            col_dest = ", ".join(fk["referred_columns"])
+            col_orig = ", ".join([str(c) for c in fk.get("constrained_columns", []) if c is not None])
+            tbl_dest = fk.get("referred_table", "desconocida")
+            col_dest = ", ".join([str(c) for c in fk.get("referred_columns", []) if c is not None])
             rel_doc = (
                 f"RELACION ENTRE TABLAS:\n"
                 f"La tabla '{table_name}' se relaciona con la tabla '{tbl_dest}'.\n"
@@ -222,7 +222,7 @@ def generate_natural_language_docs(schema_meta: Dict[str, Any]) -> List[Dict[str
 
         for idx in meta.get("indexes", []):
             idx_name = idx.get("name") or f"idx_{table_name}"
-            cols = ", ".join(idx.get("column_names", []))
+            cols = ", ".join([str(c) for c in idx.get("column_names", []) if c is not None]) or "expresion"
             unique_flag = "unico" if idx.get("unique") else "no unico"
             doc_idx = (
                 f"INDICE DE BASE DE DATOS:\n"
@@ -250,9 +250,9 @@ def generate_single_table_ddl(table_name: str, meta: Dict[str, Any]) -> str:
         comment = f" -- {col['comment']}" if col.get("comment") else ""
         col_lines.append(f"    {col['name']} {col['type']}{pk}{nullable}{default}{comment}")
     for fk in meta.get("foreign_keys", []):
-        col_orig = ", ".join(fk["constrained_columns"])
-        col_dest = ", ".join(fk["referred_columns"])
-        col_lines.append(f"    FOREIGN KEY ({col_orig}) REFERENCES {fk['referred_table']} ({col_dest})")
+        col_orig = ", ".join([str(c) for c in fk.get("constrained_columns", []) if c is not None])
+        col_dest = ", ".join([str(c) for c in fk.get("referred_columns", []) if c is not None])
+        col_lines.append(f"    FOREIGN KEY ({col_orig}) REFERENCES {fk.get('referred_table', 'desconocida')} ({col_dest})")
     lines.append(",\n".join(col_lines))
     lines.append(");")
     return "\n".join(lines)
@@ -276,9 +276,9 @@ def generate_ddl_preview(schema_meta: Dict[str, Any]) -> str:
             nullable = "" if col.get("nullable", True) else " NOT NULL"
             col_lines.append(f"    {col['name']} {col['type']}{pk}{nullable}")
         for fk in meta.get("foreign_keys", []):
-            col_orig = ", ".join(fk["constrained_columns"])
-            col_dest = ", ".join(fk["referred_columns"])
-            col_lines.append(f"    FOREIGN KEY ({col_orig}) REFERENCES {fk['referred_table']} ({col_dest})")
+            col_orig = ", ".join([str(c) for c in fk.get("constrained_columns", []) if c is not None])
+            col_dest = ", ".join([str(c) for c in fk.get("referred_columns", []) if c is not None])
+            col_lines.append(f"    FOREIGN KEY ({col_orig}) REFERENCES {fk.get('referred_table', 'desconocida')} ({col_dest})")
         lines.append(",\n".join(col_lines))
         lines.append(");\n")
     return "\n".join(lines)

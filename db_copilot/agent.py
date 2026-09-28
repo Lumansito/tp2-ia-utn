@@ -136,7 +136,7 @@ def make_tools(thread_id: str):
             for c in table.get("columns", [])
         )
         fks = "\n".join(
-            f"- {table_name}.{','.join(fk['constrained_columns'])} -> {fk['referred_table']}.{','.join(fk['referred_columns'])}"
+            f"- {table_name}.{','.join([str(c) for c in fk.get('constrained_columns', []) if c is not None])} -> {fk.get('referred_table', '')}.{','.join([str(c) for c in fk.get('referred_columns', []) if c is not None])}"
             for fk in table.get("foreign_keys", [])
         ) or "Sin claves foraneas."
         comment = f"\nComentario de la tabla: {table['comment']}" if table.get("comment") else ""

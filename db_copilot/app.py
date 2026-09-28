@@ -606,7 +606,7 @@ with tab_schema:
 
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
-            pk_str = ", ".join(table_meta.get("primary_key", [])) or "No definida"
+            pk_str = ", ".join([str(c) for c in table_meta.get("primary_key", []) if c is not None]) or "No definida"
             st.metric("Clave Primaria", pk_str, border=True, icon=":material/key:")
         with col_m2:
             st.metric("Total Columnas", len(table_meta.get("columns", [])), border=True, icon=":material/view_column:")
@@ -623,12 +623,13 @@ with tab_schema:
                 _section_label("Estructura")
 
                 formatted_cols = []
-                pk_set = set(table_meta.get("primary_key", []))
+                pk_set = set([c for c in table_meta.get("primary_key", []) if c is not None])
 
                 fk_map = {}
                 for fk in table_meta.get("foreign_keys", []):
                     for orig_col, ref_col in zip(fk.get("constrained_columns", []), fk.get("referred_columns", [])):
-                        fk_map[orig_col] = f"FK → {fk['referred_table']}({ref_col})"
+                        if orig_col is not None:
+                            fk_map[orig_col] = f"FK → {fk.get('referred_table', '')}({ref_col})"
 
                 for col in table_meta.get("columns", []):
                     name = col["name"]
@@ -660,7 +661,7 @@ with tab_schema:
                     idx_rows = []
                     for idx in table_meta["indexes"]:
                         unique_label = "UNIQUE" if idx.get("unique") else "INDEX"
-                        cols_str = ", ".join(idx.get("column_names", []))
+                        cols_str = ", ".join([str(c) for c in idx.get("column_names", []) if c is not None]) or "expresión"
                         idx_rows.append(
                             f'<div class="dbc-idx"><code>{html.escape(str(idx.get("name")))}</code>'
                             f'<span class="dbc-idx-kind{" unique" if idx.get("unique") else ""}">{unique_label}</span>'
