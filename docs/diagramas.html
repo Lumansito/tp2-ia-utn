@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diagramas de Arquitectura y Secuencia - DB Copilot</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 30px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    h1 {
+      color: #38bdf8;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    p.subtitle {
+      text-align: center;
+      color: #94a3b8;
+      margin-bottom: 35px;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 35px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #334155;
+      padding-bottom: 12px;
+    }
+    h2 {
+      margin: 0;
+      font-size: 1.3rem;
+      color: #7dd3fc;
+    }
+    .btn {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      padding: 8px 16px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover {
+      background: #0369a1;
+    }
+    .diagram-container {
+      background: #ffffff;
+      padding: 20px;
+      border-radius: 8px;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Visualizador y Descargador de Diagramas</h1>
+  <p class="subtitle">DB Copilot: Flujo RAG, Ciclo ReAct con LangGraph y Secuencia Completa</p>
+
+  <!-- DIAGRAMA 1: SECUENCIA COMPLETA -->
+  <div class="card">
+    <div class="card-header">
+      <h2>1. Diagrama de Secuencia Completo (Flujo ReAct de 6 pasos)</h2>
+      <button class="btn" onclick="downloadSVG('diagram1', 'secuencia_langgraph_db_copilot.svg')">
+        Descargar SVG
+      </button>
+    </div>
+    <div class="diagram-container" id="diagram1">
+      <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Operario (UI)
+    participant LG as LangGraph / Python App
+    participant Gem as Google Gemini API (LLM)
+    participant RAG as ChromaDB (Vector Store)
+    participant Guard as SQL Guardrails (sqlglot)
+    participant DB as PostgreSQL DB
+
+    User->>LG: "¿Cuáles son los 3 productos más caros?"
+    Note over LG: Inicia el agente ReAct.<br/>Crea lista: [SystemPrompt, HumanMessage]
+
+    %% PASO 1: RETRIEVE SCHEMA
+    rect rgb(240, 248, 255)
+    Note over LG,Gem: LLAMADA API 1 (Decisión de Tool)
+    LG->>Gem: Envía mensajes + definición de 5 Tools
+    Gem-->>LG: tool_call: retrieve_schema(query="productos precio")
+    LG->>RAG: Búsqueda por similitud semántica
+    RAG-->>LG: "[TABLA: Producto] columnas: id, nombre, precioVenta..."
+    Note over LG: Agrega ToolMessage al contexto
+    end
+
+    %% PASO 2: PRIMER RUN_SELECT (FALLA)
+    rect rgb(255, 240, 240)
+    Note over LG,Gem: LLAMADA API 2 (Genera SQL inicial)
+    LG->>Gem: Envía historial + contexto RAG
+    Gem-->>LG: tool_call: run_select(sql="SELECT nombre, precioVenta FROM Producto ORDER BY precioVenta DESC LIMIT 3")
+    LG->>Guard: Valida sintaxis y cláusulas
+    Guard-->>LG: SQL Válido
+    LG->>DB: Ejecuta en PostgreSQL
+    DB-->>LG: ERROR: (psycopg2.errors.UndefinedTable) relation "producto" does not exist
+    Note over LG: Agrega ToolMessage con el ERROR al contexto
+    end
+
+    %% PASO 3: AUTO-CORRECCIÓN (LIST TABLES)
+    rect rgb(255, 250, 240)
+    Note over LG,Gem: LLAMADA API 3 (Auto-corrección)
+    LG->>Gem: Envía historial incluyendo el error de Postgres
+    Gem-->>LG: tool_call: list_tables()
+    Note over LG: Lee metadata local en memoria
+    LG-->>LG: Tablas: Producto, Usuario, Sucursal, etc.
+    Note over LG: Agrega ToolMessage con lista de tablas
+    end
+
+    %% PASO 4: DESCRIBE TABLE
+    rect rgb(245, 255, 245)
+    Note over LG,Gem: LLAMADA API 4 (Inspección exacta de la tabla)
+    LG->>Gem: Envía historial
+    Gem-->>LG: tool_call: describe_table(table_name="Producto")
+    Note over LG: Extrae columnas exactas desde SQLAlchemy
+    LG-->>LG: Columnas: id, codigo, nombre, precioVenta, etc.
+    Note over LG: Agrega ToolMessage con columnas
+    end
+
+    %% PASO 5: RUN_SELECT REINTENTO (ÉXITO)
+    rect rgb(240, 255, 240)
+    Note over LG,Gem: LLAMADA API 5 (Reintento de consulta)
+    LG->>Gem: Envía historial completo con nombres verificados
+    Gem-->>LG: tool_call: run_select(sql="SELECT nombre, \"precioVenta\" FROM \"Producto\" ORDER BY \"precioVenta\" DESC LIMIT 3")
+    LG->>Guard: Valida SQL
+    Guard-->>LG: SQL Válido (inyecta LIMIT si hiciera falta)
+    LG->>DB: Ejecuta en PostgreSQL
+    DB-->>LG: 3 filas obtenidas (UPS GALAXY VX 1500kVA, etc.)
+    Note over LG: Guarda DataFrame en sesión y resume sample
+    end
+
+    %% PASO 6: RESPUESTA FINAL
+    rect rgb(245, 240, 255)
+    Note over LG,Gem: LLAMADA API 6 (Respuesta final)
+    LG->>Gem: Envía historial con resultado exitoso
+    Gem-->>LG: "Los 3 productos más caros son: 1) UPS GALAXY VX ($59.614.715)..."
+    end
+
+    LG-->>User: Muestra respuesta final + Tabla interactiva de resultados
+      </div>
+    </div>
+  </div>
+
+  <!-- DIAGRAMA 2: PIPELINE RAG -->
+  <div class="card">
+    <div class="card-header">
+      <h2>2. Pipeline RAG: De Base de Datos a ChromaDB y Consulta</h2>
+      <button class="btn" onclick="downloadSVG('diagram2', 'pipeline_rag_esquema.svg')">
+        Descargar SVG
+      </button>
+    </div>
+    <div class="diagram-container" id="diagram2">
+      <div class="mermaid">
+flowchart LR
+    subgraph Fase1["1. Introspección y Chunking"]
+        A["BD Relacional (PostgreSQL)"] -->|SQLAlchemy inspect| B["Documentos NLP (Tablas, FKs, Índices)"]
+        B -->|RecursiveCharacterTextSplitter| C["Chunks con Metadatos"]
+    end
+
+    subgraph Fase2["2. Indexación Vectorial"]
+        C -->|Gemini Embeddings API| D["Vectores Numéricos"]
+        D -->|Almacenamiento| E[("ChromaDB")]
+    end
+
+    subgraph Fase3["3. Consulta e Inferencia (RAG)"]
+        Q["Pregunta del Usuario"] -->|Gemini Embeddings| QV["Vector Consulta"]
+        QV -->|Búsqueda Similitud / Top-k| E
+        E -->|Contexto Relevante| P["System Prompt Enriquecido"]
+        Q --> P
+        P -->|Gemini LLM API| R["Respuesta Final al Operario"]
+    end
+      </div>
+    </div>
+  </div>
+
+  <!-- DIAGRAMA 3: MÁQUINA DE ESTADOS LANGGRAPH -->
+  <div class="card">
+    <div class="card-header">
+      <h2>3. Máquina de Estados LangGraph (Orquestador ReAct)</h2>
+      <button class="btn" onclick="downloadSVG('diagram3', 'maquina_estados_langgraph.svg')">
+        Descargar SVG
+      </button>
+    </div>
+    <div class="diagram-container" id="diagram3">
+      <div class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> agent: Entrada Usuario
+
+    state agent {
+        description: "Nodo LLM (Gemini)"
+    }
+
+    state tools {
+        description: "Nodo Herramientas (Python Local: SQLGlot / DB)"
+    }
+
+    agent --> tools: ¿tool_calls presente? (Llama a retrieve, run_select, etc.)
+    tools --> agent: Retorna ToolMessage al Estado
+
+    agent --> [*]: ¿Sin tool_calls? (Respuesta final en lenguaje natural)
+      </div>
+    </div>
+  </div>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: 'default' });
+
+    function downloadSVG(containerId, filename) {
+      const container = document.getElementById(containerId);
+      const svg = container.querySelector('svg');
+      if (!svg) {
+        alert('El diagrama todavía se está renderizando.');
+        return;
+      }
+      const svgData = new XMLSerializer().serializeToString(svg);
+      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const svgUrl = URL.createObjectURL(svgBlob);
+      const downloadLink = document.createElement('a');
+      downloadLink.href = svgUrl;
+      downloadLink.download = filename;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+      URL.revokeObjectURL(svgUrl);
+    }
+  </script>
+</body>
+</html>
