@@ -1,260 +1,285 @@
-# 🛡️ DB Copilot — Copiloto RAG & Agente SQL para bases de datos relacionales
+<div align="center">
 
-> **TP2: Sistemas Inteligentes** — Universidad Tecnológica Nacional (UTN)
-> Sistema inteligente para consultar, documentar y operar sobre una base de datos relacional
-> mediante RAG y un agente de LangGraph con guardrails de seguridad y aprobación humana (Human-In-The-Loop).
+# 🛡️ DB Copilot
 
-> Documentación extendida en [`docs/`](docs/): arquitectura detallada en
-> [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md) y qué falta en
-> [`docs/03-proximos-pasos.md`](docs/03-proximos-pasos.md).
+**Talk to your relational database in plain language — safely.**
 
----
+A RAG + SQL-agent copilot that documents, queries and (with human approval) modifies a live
+PostgreSQL database, built on LangGraph with AST-based SQL guardrails and a persistent
+Human-in-the-Loop approval flow.
 
-## 🎯 Caso de negocio
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-ReAct%20agent-1C3C3C)
+![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-demo%20DB-2496ED?logo=docker&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-52%20passing-2EA44F)
 
-En las organizaciones, entender el modelo de datos de una base relacional y escribir SQL correcto
-suele depender de pocas personas (ingenieros o DBAs que conocen la base "de memoria"), lo que genera
-cuellos de botella para analistas y equipos de negocio.
-
-**DB Copilot** resuelve esto con dos modos:
-
-1. **Modo Documentación (RAG):** responde preguntas sobre la estructura de la base (tablas, columnas,
-   relaciones, índices) sin ejecutar SQL, usando búsqueda semántica sobre el esquema.
-2. **Modo Agente SQL:** un agente de LangGraph decide qué herramientas usar (buscar en el esquema,
-   describir una tabla, ejecutar una lectura, proponer una escritura) para responder pedidos en
-   lenguaje natural, con guardrails de seguridad y aprobación humana obligatoria para toda escritura.
+</div>
 
 ---
 
-## 🏗️ Arquitectura
+## Overview
 
-```
-                    Usuario (lenguaje natural)
-                              │
-              ┌───────────────┴────────────────┐
-              ▼                                 ▼
-   Modo Documentación (RAG)              Modo Agente SQL (LangGraph)
-              │                                 │
-    Retriever semántico (Chroma)      Agente ReAct con herramientas:
-    sobre el esquema introspectado    list_tables, describe_table,
-    en vivo desde DATABASE_URL        retrieve_schema, run_select, run_write
-              │                                 │
-     Síntesis con el LLM configurado     Guardrails (sqlglot AST)
-                                                 │
-                                   ┌─────────────┴─────────────┐
-                                   ▼                            ▼
-                         SELECT permitido              INSERT/UPDATE/DELETE
-                         (LIMIT inyectado)              → cola de aprobación
-                                   │                     humana (HITL)
-                          DataFrame a la UI                     │
-                                                        Aprobado → ejecuta
-                                                        Rechazado → cancela
-                                          (todo queda en el audit log)
-```
+In most organizations, understanding a relational data model and writing correct SQL depends on a
+handful of people — the engineers or DBAs who know the database by heart. Everyone else (analysts,
+business teams, new hires) has to queue up behind them.
 
-El esquema **siempre** se lee en vivo de `DATABASE_URL` (introspección con SQLAlchemy). No hay carga
-manual de un `.sql`/`.json`: eso evitaba que el sistema respondiera sobre un esquema distinto del que
-realmente consultaba.
+**DB Copilot** removes that bottleneck with two complementary modes:
+
+| Mode | What it answers | Touches data? |
+|---|---|---|
+| **Documentation mode (RAG)** | "What tables are there?", "How does `orders` relate to `customers`?", "What does `status` mean?" | No — works only on schema metadata |
+| **Agent mode (SQL)** | "How many orders were placed last month?", "Who is our top customer?", "Mark order 42 as shipped" | Yes — reads run directly, **every write requires human approval** |
+
+The system is database- and provider-agnostic: point `DATABASE_URL` at any PostgreSQL database and
+choose Gemini or OpenAI through environment variables.
+
+> Built as the final project (TP2) for the *Intelligent Systems* course at Universidad Tecnológica
+> Nacional (UTN), Argentina.
 
 ---
 
-## 📁 Estructura del proyecto
+## Key features
 
-```
-tp2-ia-utn/
-├── db_copilot/
-│   ├── config.py                 # .env, engine SQLAlchemy, LLM y embeddings (OpenAI o Gemini)
-│   ├── schema_introspection.py   # Introspección en vivo del catálogo, docs NLP para el RAG, DBML/DDL
-│   ├── rag.py                    # Vector store (Chroma) con los embeddings configurados
-│   ├── sql_guard.py              # Guardrails con sqlglot (AST): clasificación, LIMIT, bloqueo de DDL
-│   ├── agent.py                  # Herramientas @tool, agente ReAct de LangGraph, HITL
-│   ├── audit_store.py            # Auditoría y cola de aprobaciones persistidas en SQLite
-│   └── app.py                    # App Streamlit (Chat, Esquema, Diagrama ER, Auditoría)
-├── scripts/
-│   ├── generate_demo_sql.py      # Genera el SQL de la base de demo (Faker, seed fijo)
-│   └── verify_demo_db.py         # Verifica que la base de demo de Docker haya cargado bien
-├── docker/
-│   └── init/01_schema_and_seed.sql   # Salida de generate_demo_sql.py; la corre Postgres solo al iniciar
-├── docker-compose.yml             # Postgres con la base de demo precargada (puerto configurable)
-├── tests/                         # pytest: sql_guard, config, introspección, herramientas del agente
-├── notebooks/demo.ipynb          # Pendiente: se rehace al final, para la entrega (ver docs/03)
-├── docs/                          # Documentación de arquitectura, estado y próximos pasos
-├── render_dbml.js                # Renderiza el DBML a SVG (Node.js + @softwaretechnik/dbml-renderer)
-├── package.json / package-lock.json   # Dependencia de Node de render_dbml.js
-├── start_app.bat                 # Windows: venv, dependencias, Docker, Node y levanta la app
-├── requirements.txt
-└── .env.example
-```
-
-`data/` (Chroma y el audit log en SQLite) se crea sola al importar `config.py` y está en `.gitignore`.
+- 🤖 **A real agent, not a fixed pipeline.** A LangGraph ReAct agent decides at every step which tool to
+  call: `list_tables`, `describe_table`, `retrieve_schema`, `run_select` or `run_write`.
+- 🔁 **Self-correcting SQL.** When a query fails, the database error is returned to the agent as text; it
+  reads it, fixes the SQL and retries on its own.
+- 🧱 **AST-based guardrails.** Every statement is parsed with `sqlglot` and classified before it runs —
+  no regex that can be bypassed with comments or string tricks.
+- ✋ **Human-in-the-Loop.** `INSERT` / `UPDATE` / `DELETE` are never executed directly: they are queued
+  and only run after an operator explicitly approves them in the UI.
+- 📜 **Persistent audit log.** Approval queue and audit trail live in SQLite, survive restarts and are
+  scoped per session.
+- 🔍 **Live schema introspection.** The schema is always read from the database itself, and
+  `COMMENT ON TABLE` / `COMMENT ON COLUMN` are used as business context for RAG — no hand-maintained
+  synonym dictionaries.
+- 🗺️ **Auto-generated ER diagram** (DBML → SVG) and reconstructed DDL for every table.
+- 🐳 **One-command demo database.** A reproducible e-commerce dataset (Faker, fixed seed) ships with
+  Docker Compose, so anyone can try the project without their own data or credentials.
 
 ---
 
-## 🚀 Puesta en marcha
+## Architecture
 
-### Opción rápida (Windows): `start_app.bat`
+<p align="center">
+  <img src="assets/architecture.png" alt="DB Copilot architecture: Streamlit UI routes questions to a RAG documentation mode or a LangGraph ReAct agent whose SQL passes through a sqlglot guardrail — reads run, writes go to human approval, DDL is blocked" width="100%">
+</p>
 
-Para no tener que instalar nada a mano, en Windows alcanza con hacer doble clic en
-[`start_app.bat`](start_app.bat) (o correrlo desde una consola). El script:
+<details>
+<summary>Text version (Mermaid)</summary>
 
-1. Verifica que `python` esté instalado.
-2. Crea un entorno virtual en `.venv` (la primera vez) y lo activa.
-3. Instala/actualiza las dependencias de `requirements.txt`.
-4. Si no existe `.env`, lo crea a partir de `.env.example` y lo abre en el Bloc de notas para
-   que completes `LLM_PROVIDER`, `LLM_API_KEY`, etc. (avisa y no continúa si te olvidaste de
-   cambiar la clave de ejemplo o la dejaste vacía).
-5. Si encuentra Docker, levanta la base de datos con `docker compose up -d` (precargada con datos
-   de demo — ver más abajo). Si tu `DATABASE_URL` apunta a otra base, este paso se puede ignorar.
-6. Si encuentra Node.js y falta `node_modules`, corre `npm install` (dependencia opcional para el
-   diagrama SVG del esquema).
-7. Levanta la app con `streamlit run db_copilot/app.py` en `http://localhost:8501`.
+```mermaid
+flowchart TD
+    U([User — natural language]) --> UI[Streamlit UI<br/>Chat · Schema · Diagram · Audit]
+    UI --> M{Mode}
 
-Si preferís hacerlo a mano, o estás en Linux/Mac, seguí con la opción manual.
+    M -->|Documentation| RAG[Semantic retriever<br/>Chroma over live schema docs]
+    RAG --> LLM1[LLM synthesis]
 
-### Opción manual
+    M -->|Agent| AG[LangGraph ReAct agent]
+    AG --> T[Tools: list_tables · describe_table ·<br/>retrieve_schema · run_select · run_write]
+    T --> G{SQL guardrail<br/>sqlglot AST}
 
-#### 1. Instalar dependencias
+    G -->|SELECT| R[Execute with auto-injected LIMIT]
+    R --> DF[Full DataFrame → UI<br/>short summary → LLM]
+    G -->|INSERT / UPDATE / DELETE| Q[Approval queue - HITL]
+    Q -->|Approved| X[Execute]
+    Q -->|Rejected| C[Cancel]
+    G -->|DROP / ALTER / CREATE / TRUNCATE| B[Blocked]
 
-Requiere Python 3.10+.
+    X --> A[(Audit log · SQLite)]
+    C --> A
+    DB[(PostgreSQL)] -. live introspection .-> RAG
+    DB -. live introspection .-> AG
+```
+
+</details>
+
+### Data channel vs. conversational channel
+
+`run_select` stores the **full** result as a `DataFrame` for the UI, while the LLM only receives a
+compact summary (row count, columns and a two-row sample). This keeps thousands of rows out of the
+prompt — cutting cost and latency, and removing the risk of the model "transcribing" (and
+hallucinating) data.
+
+### SQL guardrail classification
+
+| Category | Examples | Behavior |
+|---|---|---|
+| **Read** | `SELECT`, `WITH`, `UNION`, `INTERSECT`, `EXCEPT` | Executed immediately; a `LIMIT` (default 500) is injected if missing |
+| **Write** | `INSERT`, `UPDATE`, `DELETE` | Queued for human approval |
+| **Forbidden** | `DROP`, `ALTER`, `CREATE`, `TRUNCATE` | Always blocked |
+| **Invalid** | Unparseable SQL or multiple statements | Rejected; the agent is asked to fix it |
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.10+ |
+| Agent orchestration | LangGraph (`create_react_agent`) + LangChain |
+| LLM & embeddings | Google Gemini or OpenAI (configurable) |
+| Vector store | Chroma |
+| SQL parsing / guardrails | sqlglot |
+| Database access | SQLAlchemy + psycopg2 (PostgreSQL) |
+| Audit & approval queue | SQLite |
+| UI | Streamlit (custom CSS theme) |
+| ER diagrams | DBML + `@softwaretechnik/dbml-renderer` (Node.js) |
+| Demo database | Docker Compose + Faker |
+| Testing | pytest |
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.10+
+- An API key for **Google Gemini** or **OpenAI**
+- *Optional:* Docker (for the demo database) and Node.js (for the SVG ER diagram)
+
+### Quick start (Windows)
+
+Double-click [`start_app.bat`](start_app.bat). It creates a virtual environment, installs dependencies,
+creates `.env` from the template (and opens it so you can add your API key), starts the demo database
+with Docker if available, installs the Node dependency for the diagram, and launches the app at
+`http://localhost:8501`.
+
+### Manual setup (Linux / macOS / Windows)
 
 ```bash
+# 1. Clone and install
+git clone https://github.com/Lumansito/tp2-ia-utn.git
+cd tp2-ia-utn
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
+npm install                                          # optional, for the ER diagram
 
-Opcional, solo para renderizar el diagrama ER a SVG (requiere Node.js):
+# 2. Configure
+cp .env.example .env                                 # then edit .env
 
-```bash
-npm install
-```
-
-#### 2. Configurar el `.env`
-
-```bash
-cp .env.example .env
-```
-
-`LLM_PROVIDER` acepta **`OPENAI`** o **`GEMINI`**: solo hace falta configurar el proveedor que vayas a
-usar (no ambos). Como mínimo:
-
-```env
-DATABASE_URL=postgresql+psycopg2://usuario:password@localhost:5432/mi_base
-
-LLM_PROVIDER=GEMINI
-LLM_API_KEY=tu-api-key
-LLM_MODEL=gemini-3.8-flash
-EMBEDDING_MODEL=models/gemini-embedding-001
-```
-
-(Para OpenAI: `LLM_PROVIDER=OPENAI`, `LLM_MODEL=gpt-4o-mini`, `EMBEDDING_MODEL=text-embedding-3-small`,
-por ejemplo). Si falta cualquiera de estas variables, la app **no arranca** con un error claro
-(a propósito: preferimos eso antes que un modo degradado).
-
-> Los nombres de modelo cambian con el tiempo (a nosotros ya nos pasó: `gemini-2.5-flash` dejó de
-> estar disponible para claves nuevas). Si el arranque tira un error `NOT_FOUND` o `model no longer
-> available`, confirmá el nombre vigente en la documentación del proveedor y actualizá `LLM_MODEL`.
-
-#### 3. Base de datos: la tuya, o la de demo con Docker
-
-Si ya tenés una base propia, apuntá `DATABASE_URL` a ella y listo — no hace falta nada más de esta
-sección.
-
-Si no tenés una base para probar, `docker-compose.yml` levanta un Postgres con una base de demo de
-e-commerce **ya cargada** (categorías, productos, clientes, órdenes, ítems y pagos, generados con
-Faker):
-
-```bash
+# 3. Start the demo database (skip if you use your own)
 docker compose up -d
-```
+python scripts/verify_demo_db.py                     # checks the seed data loaded correctly
 
-La primera vez que el contenedor arranca con el volumen vacío, Postgres corre automáticamente
-`docker/init/01_schema_and_seed.sql` (generado por `scripts/generate_demo_sql.py`). Para confirmar que
-cargó bien:
-
-```bash
-python scripts/verify_demo_db.py
-```
-
-Si el puerto `5432` ya está ocupado en tu máquina (otro Postgres local, u otro proyecto con Docker),
-definí `POSTGRES_PORT` en tu `.env` (por ejemplo `5433`) y actualizá el puerto en `DATABASE_URL`
-también.
-
-#### 4. Ejecutar la app
-
-```bash
+# 4. Run
 streamlit run db_copilot/app.py
 ```
 
-Se abre en `http://localhost:8501`. Desde ahí podés:
-- alternar entre **Modo Agente** y **Modo Documentación (RAG)**;
-- ver el esquema de la base en vivo, su diagrama ER y el DDL reconstruido de cada tabla (todo de
-  solo lectura);
-- aprobar o rechazar las escrituras (`INSERT`/`UPDATE`/`DELETE`) que proponga el agente;
-- consultar el log de auditoría completo.
+### Configuration
+
+| Variable | Description | Example |
+|---|---|---|
+| `DATABASE_URL` | SQLAlchemy connection string of the target database | `postgresql+psycopg2://postgres:postgres@localhost:5432/ecommerce_db` |
+| `LLM_PROVIDER` | `GEMINI` or `OPENAI` | `GEMINI` |
+| `LLM_API_KEY` | API key for the selected provider | — |
+| `LLM_MODEL` | Chat model name | `gemini-3.8-flash` / `gpt-4o-mini` |
+| `EMBEDDING_MODEL` | Embedding model name | `models/gemini-embedding-001` / `text-embedding-3-small` |
+| `POSTGRES_PORT` | Host port for the demo database container | `5432` |
+
+If any required variable is missing, the app **refuses to start** with a clear error. This is
+intentional: there is no silent fallback to a degraded mode.
+
+> **Tip:** provider model names change over time. If you get a `NOT_FOUND` / "model no longer
+> available" error, check the provider's docs and update `LLM_MODEL`.
+
+### Demo database
+
+`docker-compose.yml` starts PostgreSQL pre-loaded with an e-commerce schema — categories, products,
+customers, orders, order items and payments — generated deterministically with Faker (`SEED=42`) and
+documented with `COMMENT ON` statements so the RAG mode has business context to work with. If port
+`5432` is already in use, set `POSTGRES_PORT` (and the port in `DATABASE_URL`) in your `.env`.
 
 ---
 
-## 🧠 Decisiones de diseño clave
+## Usage
 
-### 1. Agente real de LangGraph, no un pipeline fijo
-El modo Agente usa `create_react_agent` de LangGraph: el LLM decide en cada paso qué herramienta
-invocar (`list_tables`, `describe_table`, `retrieve_schema`, `run_select`, `run_write`). La
-auto-corrección ante un error de SQL no es un prompt especial aparte: `run_select` devuelve el error
-del motor como texto y el mismo agente lo lee, corrige el SQL y reintenta.
+Once the app is running you can:
 
-### 2. Separación del canal de datos y el canal conversacional
-`run_select` ejecuta la consulta y guarda el `DataFrame` completo para la interfaz; al LLM solo le
-llega un resumen (cantidad de filas, columnas y una muestra de 2 filas). Evita transcribir miles de
-filas en el prompt, con el costo, la latencia y el riesgo de alucinación que eso implica.
+- **Chat** in *Documentation* or *Agent* mode and see a step-by-step timeline of every tool call.
+- **Browse the schema** — columns, keys, indexes and reconstructed DDL for each table.
+- **View the ER diagram**, generated automatically from the live schema.
+- **Approve or reject** writes proposed by the agent from the Human-in-the-Loop panel.
+- **Inspect the audit log** of every read, write proposal, approval and rejection.
 
-### 3. Guardrails con `sqlglot` (AST), no con expresiones regulares
-`sql_guard.py` parsea el árbol de sintaxis de cada sentencia: exige que sea una única sentencia,
-inyecta `LIMIT` en las lecturas que no lo tengan (incluye `UNION`/`INTERSECT`/`EXCEPT`/`WITH`), y
-bloquea sin excepción `DROP`/`ALTER`/`CREATE`/`TRUNCATE`. `INSERT`/`UPDATE`/`DELETE` no se bloquean:
-quedan retenidos para aprobación humana.
+Example prompts:
 
-### 4. Human-in-the-Loop persistente
-Toda escritura propuesta por el agente queda en una cola de aprobación (`data/audit.sqlite`, ver
-`audit_store.py`) con un ID único. Solo se ejecuta contra la base cuando un operador la aprueba
-explícitamente desde la interfaz. Auditoría y cola sobreviven a un reinicio de la app y no se
-comparten entre sesiones de distintos usuarios (separadas por `thread_id`).
-
-### 5. Esquema siempre en vivo, sin sinónimos escritos a mano
-La introspección lee `COMMENT ON TABLE`/`COMMENT ON COLUMN` de la propia base como contexto de
-negocio para el RAG, en vez de un diccionario de sinónimos fijo pensado para un único modelo de datos.
-Esto permite apuntar `DATABASE_URL` a cualquier base y que el sistema siga funcionando.
-
-### 6. Proveedor de LLM configurable, sin degradación silenciosa
-`config.py` es genérico: `LLM_PROVIDER` elige entre Gemini y OpenAI, y solo hace falta la clave del
-proveedor que se vaya a usar. Si falta cualquier variable de configuración (proveedor, clave, modelo),
-la aplicación **no arranca** — no hay fallback a un vectorizador local sin significado semántico.
-
-### 7. Base de demo reproducible en Docker
-Para que cualquiera del equipo pueda probar la app sin armar su propia base, `docker-compose.yml`
-precarga un Postgres con datos de demo generados de forma determinística (Faker con seed fijo). Quien
-ya tenga su base solo cambia `DATABASE_URL` y no necesita este contenedor.
+```text
+Documentation:  What is the relationship between orders and payments?
+Agent:          Which 5 customers spent the most in 2025?
+Agent (write):  Change the status of order 17 to 'shipped'   → goes to the approval queue
+```
 
 ---
 
-## 🧪 Tests
+## Testing
 
 ```bash
 pytest
 ```
 
-Los tests de `sql_guard`, `config`, introspección y las herramientas del agente (`tests/`) no requieren
-red ni credenciales: usan SQLite en memoria y validan que las factories fallen con un error claro
-cuando falta configuración, y que los guardrails y el flujo de aprobación (HITL) funcionen de punta a
-punta sin un LLM real. No hay un test automático contra la API real de un LLM: eso se prueba a mano
-corriendo la app.
+52 tests cover the SQL guardrails, configuration validation, schema introspection (including DBML
+generation) and the agent tools end-to-end — including the full approval flow — using in-memory
+SQLite. The suite needs **no network access and no API keys**. Behavior against a real LLM is
+validated manually through the app.
 
 ---
 
-## ⚠️ Notas para la defensa
+## Project structure
 
-- Los nombres de modelo (Gemini u OpenAI) cambian con frecuencia; confirmá el que tengas en
-  `LLM_MODEL` antes de una demo importante (ver la nota en la sección de `.env` más arriba).
-- El notebook de entrega (`notebooks/demo.ipynb`) todavía corresponde a una versión anterior del
-  proyecto y se va a rehacer al final, una vez cerrada la app — ver
-  [`docs/03-proximos-pasos.md`](docs/03-proximos-pasos.md).
-- Detalle de arquitectura módulo por módulo, y las dificultades encontradas durante el desarrollo
-  (útiles para la defensa oral), están en [`docs/01-documentacion-actual.md`](docs/01-documentacion-actual.md).
+```
+tp2-ia-utn/
+├── db_copilot/
+│   ├── config.py                # .env loading, SQLAlchemy engine, LLM & embedding factories
+│   ├── schema_introspection.py  # Live catalog introspection, RAG documents, DBML / DDL generation
+│   ├── rag.py                   # Chroma vector store
+│   ├── sql_guard.py             # sqlglot-based guardrails (classification, LIMIT injection, DDL blocking)
+│   ├── agent.py                 # Agent tools, LangGraph ReAct agent, HITL approval
+│   ├── audit_store.py           # SQLite-backed audit log and approval queue
+│   └── app.py                   # Streamlit app (Chat, Schema, ER Diagram, Audit)
+├── scripts/
+│   ├── generate_demo_sql.py     # Generates the demo database SQL (Faker, fixed seed)
+│   └── verify_demo_db.py        # Verifies the Docker demo database loaded correctly
+├── docker/init/                 # SQL executed by Postgres on first start
+├── tests/                       # pytest suite
+├── render_dbml.js               # DBML → SVG renderer (Node.js)
+├── docker-compose.yml
+├── start_app.bat                # One-click setup & launch on Windows
+├── requirements.txt
+└── .env.example
+```
+
+> The user interface and code comments are in Spanish, as the project was developed for a
+> Spanish-speaking university course.
+
+---
+
+## Design decisions & lessons learned
+
+Some of the more interesting problems we ran into while building it:
+
+| Challenge | Resolution |
+|---|---|
+| The guardrail wrongly blocked legitimate reads using `UNION` / `INTERSECT` / `EXCEPT` | Added those AST node types to the read classification |
+| The approval queue and audit log were in-memory dicts — lost on restart and shared across users | Persisted them in SQLite, scoped by session (`thread_id`) |
+| Embeddings silently fell back to a local, non-semantic `HashingVectorizer` | Removed the fallback: real embeddings or the app does not start |
+| Types such as `NUMERIC(10, 2)` broke the DBML parser and the ER diagram | Quote any column type containing spaces before emitting DBML |
+| Schema context depended on a hand-written synonym dictionary tied to one data model | Read `COMMENT ON` metadata from the database itself, making the system work with any schema |
+| Row counts for large tables were slow (`COUNT(*)`) | Use PostgreSQL's `pg_class.reltuples` estimate |
+
+---
+
+## Authors
+
+| Name | GitHub | LinkedIn |
+|---|---|---|
+| Santino Cataldi | [@SrNanu](https://github.com/SrNanu) | [santino-cataldi](https://www.linkedin.com/in/santino-cataldi/) |
+| Matías Luhmann | [@Lumansito](https://github.com/Lumansito) | [matiasluhmann](https://www.linkedin.com/in/matiasluhmann/) |
+| Tomás Wardoloff | [@Tomas-Wardoloff](https://github.com/Tomas-Wardoloff) | [tomaswardoloff](https://www.linkedin.com/in/tomaswardoloff/) |
+| Marcos Godoy Quattoni | [@marcos-godoy](https://github.com/marcos-godoy) | [marcos-godoy-quattoni](https://www.linkedin.com/in/marcos-godoy-quattoni-52954722a/) |
+| Matías Tomás Márquez | [@matipoli](https://github.com/matipoli) | [matias-tomas-marquez](https://www.linkedin.com/in/matias-tomas-marquez/) |
+
+Universidad Tecnológica Nacional (UTN) — *Intelligent Systems*, 2026.
